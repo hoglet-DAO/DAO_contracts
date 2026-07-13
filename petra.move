@@ -420,14 +420,14 @@ module dao_factory::petra {
 
     // Inflationary DAO ve(3,3) (For Launcher tokens) 
 
-    public entry fun create_dao_inflationary(
+    public fun create_dao_inflationary(
         creator: &signer,
         governance_token: Object<Metadata>,
         mint_ref: MintRef
-    ) acquires FactoryConfig, DaoRegistry {
+    ): address acquires FactoryConfig, DaoRegistry {
         charge_creation_fee(creator);
         let config = borrow_global<FactoryConfig>(@dao_factory);
-        create_dao_inflationary_internal(creator, governance_token, mint_ref, &config, @0x0)
+        create_dao_inflationary_internal(creator, governance_token, mint_ref, config, @0x0)
     }
 
     // Inflationary DAO (Called exclusively by an approved Launcher)
@@ -447,7 +447,7 @@ module dao_factory::petra {
 
         charge_creation_fee(creator);
         let config = borrow_global<FactoryConfig>(@dao_factory);
-        create_dao_inflationary_internal(creator, governance_token, mint_ref, &config, launcher_address)
+        create_dao_inflationary_internal(creator, governance_token, mint_ref, config, launcher_address)
     }
 
     fun create_dao_inflationary_internal(
@@ -527,6 +527,12 @@ module dao_factory::petra {
         });
 
         dao_address
+    }
+
+    // Function to activate the DAO (Can only be called by the configured launcher)
+    public entry fun activate_dao(launcher_signer: &signer, dao_address: address) {
+        charter::set_active(launcher_signer, dao_address);
+        jubilee::sync_clock(dao_address);
     }
 
     // Views 

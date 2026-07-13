@@ -7,8 +7,6 @@ module dao_factory::charter {
     use std::option::Option;
     use std::error;
     use supra_framework::event;
-    
-    use dao_factory::jubilee;
 
     // Errors
     const E_INVALID_DELAY: u64 = 1;
@@ -112,14 +110,11 @@ module dao_factory::charter {
         borrow_global<DaoConfig>(dao_address).is_active
     }
 
-    // Function to activate the DAO (Can only be called by the configured launcher)
-    public entry fun activate_dao(launcher_signer: &signer, dao_address: address) acquires DaoConfig {
+    // Function to activate the DAO (Called by petra)
+    public(friend) fun set_active(launcher_signer: &signer, dao_address: address) acquires DaoConfig {
         let config = borrow_global_mut<DaoConfig>(dao_address);
         assert!(std::signer::address_of(launcher_signer) == config.launcher_address, error::permission_denied(E_UNAUTHORIZED_LAUNCHER));
         config.is_active = true;
-        
-        // Fix: Reset the inflation clock so the DAO doesn't mint years of accumulated inflation instantly.
-        jubilee::sync_clock(dao_address);
 
         event::emit(DaoActivated {
             dao_address,

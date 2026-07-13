@@ -9,7 +9,6 @@
 module dao_factory::jubilee {
     friend dao_factory::petra;
     friend dao_factory::anchor;
-    friend dao_factory::charter;
     use std::signer;
     use supra_framework::fungible_asset::{Self, MintRef};
     use supra_framework::event;
