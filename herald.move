@@ -33,6 +33,7 @@ module dao_factory::herald {
     const E_NOT_OBJECT: u64 = 4;
     const E_INVALID_CONFIG_KEY: u64 = 5;
     const E_NOT_INFLATIONARY: u64 = 6;
+    const E_DAO_NOT_ACTIVE: u64 = 7;
 
     // Structs 
     struct HeraldState has key {
@@ -92,6 +93,9 @@ module dao_factory::herald {
 
         // Sentinel: propose is pausable
         sentinel::assert_not_paused(dao_address);
+        
+        // DAO Activation Lock: Only active DAOs can accept proposals
+        assert!(charter::is_active(dao_address), error::permission_denied(E_DAO_NOT_ACTIVE));
 
         // Check Anti-Spam: 1 Active Proposal Limit
         let herald_state = borrow_global_mut<HeraldState>(dao_address);
@@ -244,6 +248,92 @@ module dao_factory::herald {
             action_asset_address: asset_address,
             action_recipient: recipient,
             action_amount: amount,
+            action_config_key: 0,
+            action_config_value: 0,
+        });
+    }
+
+    public entry fun propose_claim_capability(
+        proposer: &signer,
+        legacy_addr: address,
+        dao_address: address,
+        title: String,
+        description_hash: vector<u8>,
+        target_address: address,
+    ) acquires HeraldState {
+        let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required) = 
+            validate_and_prepare_proposal(proposer, legacy_addr, dao_address, false);
+
+        // Create and store the claim capability proposal.
+        let new_proposal = ledger::new_claim_capability_proposal(
+            proposal_id,
+            proposer_addr,
+            ve_token_addr,
+            title,
+            description_hash,
+            start_time,
+            end_time,
+            quorum_required,
+            target_address,
+        );
+        ledger::add_proposal(dao_address, proposal_id, new_proposal);
+
+        event::emit(ProposalCreated {
+            dao_address,
+            proposal_id,
+            proposer: proposer_addr,
+            title,
+            proposal_type: 6, // Claim Capability
+            start_time,
+            end_time,
+            action_target_address: target_address,
+            action_asset_address: @0x0,
+            action_recipient: @0x0,
+            action_amount: 0,
+            action_config_key: 0,
+            action_config_value: 0,
+        });
+    }
+
+    public entry fun propose_nft_transfer(
+        proposer: &signer,
+        legacy_addr: address,
+        dao_address: address,
+        title: String,
+        description_hash: vector<u8>,
+        nft_address: address,
+        recipient: address,
+    ) acquires HeraldState {
+        let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required) = 
+            validate_and_prepare_proposal(proposer, legacy_addr, dao_address, false);
+
+        // Create and store the NFT Transfer proposal.
+        let new_proposal = ledger::new_nft_proposal(
+            proposal_id,
+            proposer_addr,
+            ve_token_addr,
+            title,
+            description_hash,
+            start_time,
+            end_time,
+            quorum_required,
+            nft_address,
+            recipient,
+        );
+        ledger::add_proposal(dao_address, proposal_id, new_proposal);
+
+        event::emit(ProposalCreated {
+            dao_address,
+            proposal_id,
+            proposer: proposer_addr,
+            title,
+            proposal_type: 5, // NFT Transfer
+            start_time,
+            end_time,
+            action_target_address: nft_address,
+            action_asset_address: @0x0,
+            action_recipient: recipient,
+            action_amount: 1,
             action_config_key: 0,
             action_config_value: 0,
         });

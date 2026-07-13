@@ -9,6 +9,7 @@
 module dao_factory::jubilee {
     friend dao_factory::petra;
     friend dao_factory::anchor;
+    friend dao_factory::charter;
     use std::signer;
     use supra_framework::fungible_asset::{Self, MintRef};
     use supra_framework::event;
@@ -75,6 +76,15 @@ module dao_factory::jubilee {
             tail_emission,
             gauge_split_bps,
         });
+    }
+
+    // Resets the inflation clock to the current epoch.
+    // Called when a delayed DAO is finally activated by its launcher.
+    public(friend) fun sync_clock(dao_address: address) acquires MinterConfig {
+        if (exists<MinterConfig>(dao_address)) {
+            let config = borrow_global_mut<MinterConfig>(dao_address);
+            config.last_epoch = pilgrim::now();
+        }
     }
 
     // Core Functions 
@@ -177,6 +187,15 @@ module dao_factory::jubilee {
     public fun get_weekly_emission(dao_address: address): u64 acquires MinterConfig {
         if (exists<MinterConfig>(dao_address)) {
             borrow_global<MinterConfig>(dao_address).weekly_emission
+        } else {
+            0
+        }
+    }
+
+    #[view]
+    public fun get_last_epoch(dao_address: address): u64 acquires MinterConfig {
+        if (exists<MinterConfig>(dao_address)) {
+            borrow_global<MinterConfig>(dao_address).last_epoch
         } else {
             0
         }

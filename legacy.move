@@ -14,6 +14,7 @@ module dao_factory::legacy {
     use std::signer;
     use std::string::{Self, String};
     use std::option::{Self, Option};
+    use std::vector;
     use std::error;
     use supra_framework::fungible_asset::{
         Self, FungibleAsset, Metadata, FungibleStore
@@ -987,6 +988,49 @@ module dao_factory::legacy {
     #[view]
     public fun get_dao_address(legacy: Object<VeToken>): address acquires VeToken {
         borrow_global<VeToken>(object::object_address(&legacy)).dao_address
+    }
+
+    #[view]
+    public fun get_batch_nft_metadata(nfts: vector<address>, target_dao: address): (
+        vector<address>, // valid_nfts
+        vector<u64>,     // amounts
+        vector<u64>,     // end_epochs
+        vector<u64>,     // powers
+        vector<bool>,    // is_delegated
+        u64              // current_epoch
+    ) acquires VeToken {
+        let valid_nfts = vector::empty<address>();
+        let amounts = vector::empty<u64>();
+        let end_epochs = vector::empty<u64>();
+        let powers = vector::empty<u64>();
+        let delegated_flags = vector::empty<bool>();
+        let current_epoch = pilgrim::now();
+
+        let i = 0;
+        let len = vector::length(&nfts);
+        while (i < len) {
+            let nft_addr = *vector::borrow(&nfts, i);
+            if (exists<VeToken>(nft_addr)) {
+                let ve_data = borrow_global<VeToken>(nft_addr);
+                if (ve_data.dao_address == target_dao) {
+                    let locked_amount = ve_data.locked_amount;
+                    let end_epoch = ve_data.end_epoch;
+                    let is_delegated = option::is_some(&ve_data.delegate);
+                    
+                    let epochs_left = if (end_epoch > current_epoch) { end_epoch - current_epoch } else { 0 };
+                    let power = (((locked_amount as u128) * (epochs_left as u128) / (MAX_LOCK_EPOCHS as u128)) as u64);
+
+                    vector::push_back(&mut valid_nfts, nft_addr);
+                    vector::push_back(&mut amounts, locked_amount);
+                    vector::push_back(&mut end_epochs, end_epoch);
+                    vector::push_back(&mut powers, power);
+                    vector::push_back(&mut delegated_flags, is_delegated);
+                };
+            };
+            i = i + 1;
+        };
+
+        (valid_nfts, amounts, end_epochs, powers, delegated_flags, current_epoch)
     }
 
     // External Rewards (Harvest) 

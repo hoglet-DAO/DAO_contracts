@@ -7,15 +7,18 @@ module dao_factory::charter {
     use std::option::Option;
     use std::error;
     use supra_framework::event;
+    
+    use dao_factory::jubilee;
 
     // Errors
     const E_INVALID_DELAY: u64 = 1;
     const E_INVALID_PERIOD: u64 = 2;
     const E_INVALID_QUORUM: u64 = 3;
     const E_INVALID_THRESHOLD: u64 = 4;
+    const E_UNAUTHORIZED_LAUNCHER: u64 = 5;
 
     const MAX_DELAY_SECONDS: u64 = 2592000; // 30 days
-    const MIN_PERIOD_SECONDS: u64 = 3600;   // 1 hour
+    const MIN_PERIOD_SECONDS: u64 = 86400;   // 1 day (Prevents flash-governance)
     const MIN_DELAY_SECONDS: u64 = 43200;   // 12 hours
 
     public fun min_delay_seconds(): u64 { MIN_DELAY_SECONDS }
@@ -36,6 +39,8 @@ module dao_factory::charter {
         grace_period: u64,
         proposal_count: u64,
         guardian: Option<address>,
+        is_active: bool,
+        launcher_address: address,
     }
 
     #[event]
@@ -52,6 +57,12 @@ module dao_factory::charter {
         config_value: u64,
     }
 
+    #[event]
+    struct DaoActivated has drop, store {
+        dao_address: address,
+        launcher_address: address,
+    }
+
     // Constructor function (only callable by our internal module)
     public(friend) fun initialize(
         dao_signer: &signer,
@@ -65,13 +76,17 @@ module dao_factory::charter {
         late_quorum_extension: u64,
         timelock_delay: u64,
         grace_period: u64,
-        guardian: Option<address>
+        guardian: Option<address>,
+        launcher_address: address
     ) {
         assert!(voting_delay >= MIN_DELAY_SECONDS && voting_delay <= MAX_DELAY_SECONDS, error::invalid_argument(E_INVALID_DELAY));
         assert!(voting_period >= MIN_PERIOD_SECONDS && voting_period <= MAX_DELAY_SECONDS, error::invalid_argument(E_INVALID_PERIOD));
         assert!(timelock_delay >= MIN_DELAY_SECONDS && timelock_delay <= MAX_DELAY_SECONDS, error::invalid_argument(E_INVALID_DELAY));
         assert!(quorum_numerator > 0 && quorum_numerator <= quorum_denominator, error::invalid_argument(E_INVALID_QUORUM));
+        // Strict minimum bounds for safety
+        assert!(quorum_numerator * 100 / quorum_denominator >= 1, error::invalid_argument(E_INVALID_QUORUM)); // At least 1%
         assert!(super_quorum_threshold > 0 && super_quorum_threshold <= quorum_denominator, error::invalid_argument(E_INVALID_QUORUM));
+        assert!(super_quorum_threshold * 100 / quorum_denominator >= 50, error::invalid_argument(E_INVALID_QUORUM)); // At least 50%
         assert!(proposal_threshold > 0, error::invalid_argument(E_INVALID_THRESHOLD));
 
         move_to(dao_signer, DaoConfig {
@@ -86,7 +101,29 @@ module dao_factory::charter {
             timelock_delay,
             grace_period,
             proposal_count: 0, // Starts with 0 proposals
-            guardian
+            guardian,
+            is_active: (launcher_address == @0x0),
+            launcher_address
+        });
+    }
+
+    // Public view function to check if the DAO is active
+    public fun is_active(dao_address: address): bool acquires DaoConfig {
+        borrow_global<DaoConfig>(dao_address).is_active
+    }
+
+    // Function to activate the DAO (Can only be called by the configured launcher)
+    public entry fun activate_dao(launcher_signer: &signer, dao_address: address) acquires DaoConfig {
+        let config = borrow_global_mut<DaoConfig>(dao_address);
+        assert!(std::signer::address_of(launcher_signer) == config.launcher_address, error::permission_denied(E_UNAUTHORIZED_LAUNCHER));
+        config.is_active = true;
+        
+        // Fix: Reset the inflation clock so the DAO doesn't mint years of accumulated inflation instantly.
+        jubilee::sync_clock(dao_address);
+
+        event::emit(DaoActivated {
+            dao_address,
+            launcher_address: config.launcher_address,
         });
     }
 
@@ -109,8 +146,10 @@ module dao_factory::charter {
         let config = borrow_global<DaoConfig>(dao_address);
         if (config_key == 0) {
             assert!(config_value > 0 && config_value <= config.quorum_denominator, error::invalid_argument(E_INVALID_QUORUM));
+            assert!(config_value * 100 / config.quorum_denominator >= 50, error::invalid_argument(E_INVALID_QUORUM)); // At least 50% super quorum
         } else if (config_key == 1) {
             assert!(config_value > 0 && config_value <= config.quorum_denominator, error::invalid_argument(E_INVALID_QUORUM));
+            assert!(config_value * 100 / config.quorum_denominator >= 1, error::invalid_argument(E_INVALID_QUORUM)); // At least 1% quorum
         } else if (config_key == 2) {
             assert!(config_value >= config.quorum_numerator && config_value >= config.super_quorum_threshold, error::invalid_argument(E_INVALID_QUORUM));
         } else if (config_key == 3) {

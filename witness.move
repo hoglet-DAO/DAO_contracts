@@ -35,6 +35,7 @@ module dao_factory::witness {
     const E_ALREADY_VOTED: u64      = 5;
     const E_LOCK_EXPIRED: u64       = 6;
     const E_NOT_OBJECT: u64         = 7;
+    const E_DAO_NOT_ACTIVE: u64     = 8;
 
     // Structs 
 
@@ -103,6 +104,9 @@ module dao_factory::witness {
 
         // Sentinel: cast_vote is pausable
         sentinel::assert_not_paused(dao_address);
+
+        // DAO Activation Lock: Only active DAOs allow votes
+        assert!(charter::is_active(dao_address), error::permission_denied(E_DAO_NOT_ACTIVE));
 
         let voter_addr = signer::address_of(voter);
         let ve_addr = supra_framework::object::object_address(&ve_token_obj);

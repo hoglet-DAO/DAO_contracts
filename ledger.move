@@ -12,9 +12,13 @@ module dao_factory::ledger {
     use supra_framework::timestamp;
     use supra_framework::account::{Self, SignerCapability};
     use aptos_std::smart_table::{Self, SmartTable};
+    use supra_framework::event;
 
     const E_PROPOSAL_NOT_FOUND: u64 = 4;
     const E_INVALID_LABEL: u64 = 5;
+    const E_NOT_FOUND: u64 = 6;
+    const E_ALREADY_EXECUTED: u64 = 7;
+    const E_PERMISSION_DENIED: u64 = 8;
 
     struct Proposal has store {
         id: u64,
@@ -51,6 +55,33 @@ module dao_factory::ledger {
         account_labels: SmartTable<address, String>, // On-Chain Labels
     }
 
+    struct PendingOffer has store {
+        cap: SignerCapability,
+        label: String,
+        offerer: address,
+    }
+
+    struct OffersVault has key {
+        offers: SmartTable<address, PendingOffer>
+    }
+
+    // --- EVENTS ---
+
+    #[event]
+    struct CapabilityOffered has drop, store {
+        dao_address: address,
+        target_address: address,
+        offerer: address,
+        label: String,
+    }
+
+    #[event]
+    struct CapabilityOfferCanceled has drop, store {
+        dao_address: address,
+        target_address: address,
+        offerer: address,
+    }
+
     // Constructor for the initial table
     public(friend) fun initialize(dao_signer: &signer, signer_cap: SignerCapability) {
         move_to(dao_signer, DaoState {
@@ -60,6 +91,10 @@ module dao_factory::ledger {
             recorded_proposals: smart_table::new(),
             capabilities: smart_table::new(),
             account_labels: smart_table::new(),
+        });
+        
+        move_to(dao_signer, OffersVault {
+            offers: smart_table::new()
         });
     }
 
@@ -106,6 +141,17 @@ module dao_factory::ledger {
         smart_table::add(&mut state.account_labels, target_address, label);
     }
 
+    #[view]
+    public fun has_capability(dao_address: address, target_address: address): bool acquires DaoState {
+        if (!exists<DaoState>(dao_address)) return false;
+        
+        // The DAO always has its own capability natively in state.signer_cap
+        if (dao_address == target_address) return true;
+        
+        let state = borrow_global<DaoState>(dao_address);
+        smart_table::contains(&state.capabilities, target_address)
+    }
+
     // View function to safely get the official label of an external account
     #[view]
     public fun get_account_label(dao_address: address, target_address: address): String acquires DaoState {
@@ -114,6 +160,81 @@ module dao_factory::ledger {
             *smart_table::borrow(&state.account_labels, target_address)
         } else {
             std::string::utf8(b"Unknown Account")
+        }
+    }
+
+    // --- OFFER / CLAIM CAPABILITY SYSTEM ---
+
+    // Developers call this to offer their contract's capability to the DAO
+    public fun offer_capability(offerer: &signer, dao_address: address, cap: SignerCapability, label: String) acquires OffersVault {
+        assert!(is_valid_label(&label), error::invalid_argument(E_INVALID_LABEL));
+        assert!(exists<OffersVault>(dao_address), error::invalid_state(E_NOT_FOUND));
+        
+        let vault = borrow_global_mut<OffersVault>(dao_address);
+        let target_address = account::get_signer_capability_address(&cap);
+        
+        // Ensure no previous offer exists for this address
+        assert!(!smart_table::contains(&vault.offers, target_address), error::already_exists(E_ALREADY_EXECUTED));
+        
+        smart_table::add(&mut vault.offers, target_address, PendingOffer {
+            cap,
+            label,
+            offerer: signer::address_of(offerer)
+        });
+
+        event::emit(CapabilityOffered {
+            dao_address,
+            target_address,
+            offerer: signer::address_of(offerer),
+            label,
+        });
+    }
+
+    // Developers can retract their capability if they change their mind before the DAO claims it
+    public fun cancel_offer(offerer: &signer, dao_address: address, target_address: address): SignerCapability acquires OffersVault {
+        assert!(exists<OffersVault>(dao_address), error::invalid_state(E_NOT_FOUND));
+        let vault = borrow_global_mut<OffersVault>(dao_address);
+        assert!(smart_table::contains(&vault.offers, target_address), error::not_found(E_NOT_FOUND));
+        
+        let PendingOffer { cap, label: _, offerer: original_offerer } = smart_table::remove(&mut vault.offers, target_address);
+        assert!(signer::address_of(offerer) == original_offerer, error::permission_denied(E_PERMISSION_DENIED));
+        
+        event::emit(CapabilityOfferCanceled {
+            dao_address,
+            target_address,
+            offerer: original_offerer,
+        });
+
+        cap
+    }
+
+    // The DAO executes this function via Proposal Type 6 to pull the capability from the pending vault into the main vault
+    public(friend) fun claim_capability(dao_address: address, target_address: address) acquires OffersVault, DaoState {
+        assert!(exists<OffersVault>(dao_address), error::invalid_state(E_NOT_FOUND));
+        let vault = borrow_global_mut<OffersVault>(dao_address);
+        assert!(smart_table::contains(&vault.offers, target_address), error::not_found(E_NOT_FOUND));
+        
+        let PendingOffer { cap, label, offerer: _ } = smart_table::remove(&mut vault.offers, target_address);
+        
+        let state = borrow_global_mut<DaoState>(dao_address);
+        smart_table::add(&mut state.capabilities, target_address, cap);
+        smart_table::add(&mut state.account_labels, target_address, label);
+    }
+
+    // --- VIEW FUNCTIONS FOR OFFERS VAULT ---
+
+    #[view]
+    public fun get_pending_offer_details(dao_address: address, target_address: address): (bool, String, address) acquires OffersVault {
+        if (!exists<OffersVault>(dao_address)) {
+            return (false, std::string::utf8(b""), @0x0)
+        };
+        
+        let vault = borrow_global<OffersVault>(dao_address);
+        if (smart_table::contains(&vault.offers, target_address)) {
+            let offer = smart_table::borrow(&vault.offers, target_address);
+            (true, offer.label, offer.offerer)
+        } else {
+            (false, std::string::utf8(b""), @0x0)
         }
     }
 
@@ -172,6 +293,13 @@ module dao_factory::ledger {
         (proposal.action_target_address, proposal.action_recipient, proposal.action_amount)
     }
 
+    // Extracts the arguments for a NFT Transfer proposal (nft_address, recipient)
+    public(friend) fun extract_proposal_action_nft(dao_address: address, proposal_id: u64): (address, address) acquires DaoState {
+        let dao_state = borrow_global<DaoState>(dao_address);
+        let proposal = smart_table::borrow(&dao_state.proposals, proposal_id);
+        (proposal.action_target_address, proposal.action_recipient)
+    }
+
     // Extracts the arguments for a Guardian Update proposal (new_guardian)
     public(friend) fun extract_proposal_action_guardian(dao_address: address, proposal_id: u64): address acquires DaoState {
         let dao_state = borrow_global<DaoState>(dao_address);
@@ -192,6 +320,32 @@ module dao_factory::ledger {
     }
 
 
+
+    // Manual proposal constructor for Claim Capability action
+    public(friend) fun new_claim_capability_proposal(
+        id: u64,
+        proposer: address,
+        proposer_ve_token: address,
+        title: String,
+        description_hash: vector<u8>,
+        start_time: u64,
+        end_time: u64,
+        quorum_required: u64,
+        target_address: address,
+    ): Proposal {
+        Proposal {
+            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time, eta: 0,
+            executed: false, canceled: false, quorum_reached_historically: false,
+            for_votes: 0, against_votes: 0, abstain_votes: 0,
+            upgrade_metadata: vector::empty(), upgrade_code: vector::empty(), quorum_required,
+            proposal_type: 6, // Claim Capability Type
+            action_recipient: @0x0,
+            action_amount: 0,
+            action_config_key: 0,
+            action_config_value: 0,
+            action_target_address: target_address,
+        }
+    }
 
     // Manual proposal constructor for the herald module
     public(friend) fun new_proposal(
@@ -246,6 +400,33 @@ module dao_factory::ledger {
             action_config_key: 0,
             action_config_value: 0,
             action_target_address: asset_address,
+        }
+    }
+
+    // Manual proposal constructor for NFT Transfer action
+    public(friend) fun new_nft_proposal(
+        id: u64,
+        proposer: address,
+        proposer_ve_token: address,
+        title: String,
+        description_hash: vector<u8>,
+        start_time: u64,
+        end_time: u64,
+        quorum_required: u64,
+        nft_address: address,
+        recipient: address
+    ): Proposal {
+        Proposal {
+            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time, eta: 0,
+            executed: false, canceled: false, quorum_reached_historically: false,
+            for_votes: 0, against_votes: 0, abstain_votes: 0,
+            upgrade_metadata: vector::empty(), upgrade_code: vector::empty(), quorum_required,
+            proposal_type: 5,
+            action_recipient: recipient,
+            action_amount: 1,
+            action_config_key: 0,
+            action_config_value: 0,
+            action_target_address: nft_address,
         }
     }
 

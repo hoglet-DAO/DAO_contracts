@@ -45,6 +45,7 @@ module dao_factory::petra {
     const E_SUPPLY_ZERO: u64 = 11;
     const E_NAME_TOO_LONG: u64 = 12;
     const E_SYMBOL_TOO_LONG: u64 = 13;
+    const E_UNAUTHORIZED_LAUNCHER: u64 = 14;
 
     // Constants 
     // The admin MUST transfer to a DAO.
@@ -76,6 +77,10 @@ module dao_factory::petra {
 
     struct DaoRegistry has key {
         registered_tokens: SmartTable<Object<Metadata>, address>,
+    }
+
+    struct LauncherRegistry has key {
+        approved_launchers: SmartTable<address, bool>,
     }
 
     // Events 
@@ -126,6 +131,10 @@ module dao_factory::petra {
         move_to(admin, DaoRegistry {
             registered_tokens: smart_table::new(),
         });
+
+        move_to(admin, LauncherRegistry {
+            approved_launchers: smart_table::new(),
+        });
     }
 
     // Internal Helpers 
@@ -169,6 +178,18 @@ module dao_factory::petra {
         let old_admin = config.admin_address;
         config.admin_address = new_admin;
         event::emit(AdminTransferred { old_admin, new_admin });
+    }
+
+    public entry fun approve_launcher(admin: &signer, launcher: address) acquires FactoryConfig, LauncherRegistry {
+        assert_admin(admin);
+        let registry = borrow_global_mut<LauncherRegistry>(@dao_factory);
+        smart_table::upsert(&mut registry.approved_launchers, launcher, true);
+    }
+
+    public entry fun revoke_launcher(admin: &signer, launcher: address) acquires FactoryConfig, LauncherRegistry {
+        assert_admin(admin);
+        let registry = borrow_global_mut<LauncherRegistry>(@dao_factory);
+        smart_table::upsert(&mut registry.approved_launchers, launcher, false);
     }
 
     public entry fun set_creation_fee(admin: &signer, new_fee: u64) acquires FactoryConfig {
@@ -297,7 +318,83 @@ module dao_factory::petra {
         charter::initialize(
             &dao_signer, name, config.default_voting_delay, config.default_voting_period, dynamic_threshold,
             config.default_quorum_numerator, config.default_quorum_denominator, config.default_super_quorum_threshold,
-            config.default_late_quorum_extension, config.default_timelock_delay, config.default_grace_period, option::none()
+            config.default_late_quorum_extension, config.default_timelock_delay, config.default_grace_period, option::none(),
+            @0x0
+        );
+
+        ledger::initialize(&dao_signer, signer_cap);
+
+        legacy::initialize_registry(&dao_signer, governance_token, name);
+        witness::initialize(&dao_signer);
+        herald::initialize(&dao_signer);
+
+        let constructor_ref = object::create_object(dao_address);
+        harvest::initialize(&dao_signer, governance_token, &constructor_ref);
+        sentinel::initialize(&dao_signer);
+
+        smart_table::add(&mut registry.registered_tokens, governance_token, dao_address);
+
+        event::emit(DaoCreated {
+            creator: signer::address_of(creator),
+            dao_address,
+            governance_token: governance_token_addr,
+            name,
+            is_inflationary: false,
+        });
+    }
+
+    // Static DAO (Called exclusively by an approved Launcher)
+    public fun create_dao_static_from_launcher(
+        creator: &signer,
+        launcher_signer: &signer,
+        governance_token: Object<Metadata>
+    ) acquires FactoryConfig, DaoRegistry, LauncherRegistry {
+        let launcher_address = signer::address_of(launcher_signer);
+        let launcher_registry = borrow_global<LauncherRegistry>(@dao_factory);
+        assert!(
+            smart_table::contains(&launcher_registry.approved_launchers, launcher_address) && 
+            *smart_table::borrow(&launcher_registry.approved_launchers, launcher_address),
+            error::permission_denied(E_UNAUTHORIZED_LAUNCHER)
+        );
+
+        let governance_token_addr = object::object_address(&governance_token);
+        charge_creation_fee(creator);
+
+        let config = borrow_global<FactoryConfig>(@dao_factory);
+        let registry = borrow_global_mut<DaoRegistry>(@dao_factory);
+
+        assert!(
+            !smart_table::contains(&registry.registered_tokens, governance_token),
+            error::already_exists(E_DAO_ALREADY_EXISTS)
+        );
+
+        let name = fungible_asset::name(governance_token);
+        let symbol = fungible_asset::symbol(governance_token);
+        assert!(string::length(&name) <= 60, error::invalid_argument(E_NAME_TOO_LONG));
+        assert!(string::length(&symbol) <= 20, error::invalid_argument(E_SYMBOL_TOO_LONG));
+        
+        string::append_utf8(&mut name, b" DAO");
+        let seed = bcs::to_bytes(&governance_token_addr);
+        let time_micros = timestamp::now_microseconds();
+        vector::append(&mut seed, bcs::to_bytes(&time_micros));
+        let (dao_signer, signer_cap) = account::create_resource_account(creator, seed);
+        let dao_address = signer::address_of(&dao_signer);
+
+        let decimals = fungible_asset::decimals(governance_token);
+        assert!(decimals <= 8, error::invalid_argument(E_DECIMALS_TOO_HIGH));
+
+        let supply_opt = fungible_asset::supply(governance_token);
+        assert!(option::is_some(&supply_opt), error::invalid_argument(E_NO_SUPPLY_TRACKING));
+        let current_supply = *option::borrow(&supply_opt);
+        assert!(current_supply > 0, error::invalid_argument(E_SUPPLY_ZERO));
+
+        let dynamic_threshold = (((current_supply * (config.default_proposal_threshold_ppm as u128)) / 1000000) as u64);
+
+        charter::initialize(
+            &dao_signer, name, config.default_voting_delay, config.default_voting_period, dynamic_threshold,
+            config.default_quorum_numerator, config.default_quorum_denominator, config.default_super_quorum_threshold,
+            config.default_late_quorum_extension, config.default_timelock_delay, config.default_grace_period, option::none(),
+            launcher_address
         );
 
         ledger::initialize(&dao_signer, signer_cap);
@@ -323,21 +420,43 @@ module dao_factory::petra {
 
     // Inflationary DAO ve(3,3) (For Launcher tokens) 
 
-    public fun create_dao_inflationary(
+    public entry fun create_dao_inflationary(
         creator: &signer,
         governance_token: Object<Metadata>,
         mint_ref: MintRef
-    ): address acquires FactoryConfig, DaoRegistry {
+    ) acquires FactoryConfig, DaoRegistry {
         charge_creation_fee(creator);
-        create_dao_inflationary_internal(creator, governance_token, mint_ref)
+        let config = borrow_global<FactoryConfig>(@dao_factory);
+        create_dao_inflationary_internal(creator, governance_token, mint_ref, &config, @0x0)
+    }
+
+    // Inflationary DAO (Called exclusively by an approved Launcher)
+    public fun create_dao_inflationary_from_launcher(
+        creator: &signer,
+        launcher_signer: &signer,
+        governance_token: Object<Metadata>,
+        mint_ref: MintRef
+    ): address acquires FactoryConfig, DaoRegistry, LauncherRegistry {
+        let launcher_address = signer::address_of(launcher_signer);
+        let launcher_registry = borrow_global<LauncherRegistry>(@dao_factory);
+        assert!(
+            smart_table::contains(&launcher_registry.approved_launchers, launcher_address) && 
+            *smart_table::borrow(&launcher_registry.approved_launchers, launcher_address),
+            error::permission_denied(E_UNAUTHORIZED_LAUNCHER)
+        );
+
+        charge_creation_fee(creator);
+        let config = borrow_global<FactoryConfig>(@dao_factory);
+        create_dao_inflationary_internal(creator, governance_token, mint_ref, &config, launcher_address)
     }
 
     fun create_dao_inflationary_internal(
         creator: &signer,
         governance_token: Object<Metadata>,
-        mint_ref: MintRef
-    ): address acquires FactoryConfig, DaoRegistry {
-        let config = borrow_global<FactoryConfig>(@dao_factory);
+        mint_ref: MintRef,
+        config: &FactoryConfig,
+        launcher_address: address
+    ): address acquires DaoRegistry {
         let registry = borrow_global_mut<DaoRegistry>(@dao_factory);
         assert!(
             !smart_table::contains(&registry.registered_tokens, governance_token),
@@ -372,7 +491,8 @@ module dao_factory::petra {
         charter::initialize(
             &dao_signer, name, config.default_voting_delay, config.default_voting_period, dynamic_threshold,
             config.default_quorum_numerator, config.default_quorum_denominator, config.default_super_quorum_threshold,
-            config.default_late_quorum_extension, config.default_timelock_delay, config.default_grace_period, option::none()
+            config.default_late_quorum_extension, config.default_timelock_delay, config.default_grace_period, option::none(),
+            launcher_address
         );
 
         ledger::initialize(&dao_signer, signer_cap);
