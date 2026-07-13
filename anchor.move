@@ -194,6 +194,14 @@ module dao_factory::anchor {
             } else {
                 charter::update_guardian(&dao_signer, std::option::some(new_guardian));
             };
+        } else if (proposal_type == 5) { // NFT Transfer
+            let (nft_address, recipient) = ledger::extract_proposal_action_nft(dao_address, proposal_id);
+            let nft_obj = object::address_to_object<object::ObjectCore>(nft_address);
+            object::transfer(&dao_signer, nft_obj, recipient);
+        } else if (proposal_type == 6) { // Claim Capability
+            // We reuse extract_proposal_action_guardian because both just extract action_target_address
+            let target_address = ledger::extract_proposal_action_guardian(dao_address, proposal_id);
+            ledger::claim_capability(dao_address, target_address);
         };
         
         event::emit(ProposalExecuted { dao_address, proposal_id });
