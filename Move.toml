@@ -5,8 +5,8 @@ authors = []
 
 [addresses]
 
-FUEL = "0x6c974af09deb94ae93708bfe0216db7406b974ce3189af96ba838dd723d5d768"
-dao_factory = "0x6c974af09deb94ae93708bfe0216db7406b974ce3189af96ba838dd723d5d768"
+POWER = "0xe9030ffafb1fd67a3311ad756c3e7435b6d50519b2c571f400f10462c56507cd"
+dao_factory = "0xe9030ffafb1fd67a3311ad756c3e7435b6d50519b2c571f400f10462c56507cd"
 
 [dev-addresses]
 
