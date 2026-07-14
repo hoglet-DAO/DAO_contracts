@@ -46,6 +46,7 @@ module dao_factory::petra {
     const E_NAME_TOO_LONG: u64 = 12;
     const E_SYMBOL_TOO_LONG: u64 = 13;
     const E_UNAUTHORIZED_LAUNCHER: u64 = 14;
+    const E_TOKEN_CLAIMED_BY_LAUNCHER: u64 = 15;
 
     // Constants 
     // The admin MUST transfer to a DAO.
@@ -81,6 +82,7 @@ module dao_factory::petra {
 
     struct LauncherRegistry has key {
         approved_launchers: SmartTable<address, bool>,
+        claimed_tokens: SmartTable<Object<Metadata>, address>,
     }
 
     // Events 
@@ -134,6 +136,7 @@ module dao_factory::petra {
 
         move_to(admin, LauncherRegistry {
             approved_launchers: smart_table::new(),
+            claimed_tokens: smart_table::new(),
         });
     }
 
@@ -281,7 +284,7 @@ module dao_factory::petra {
     public entry fun create_dao_static(
         creator: &signer,
         governance_token: Object<Metadata>
-    ) acquires FactoryConfig, DaoRegistry {
+    ) acquires FactoryConfig, DaoRegistry, LauncherRegistry {
         let governance_token_addr = object::object_address(&governance_token);
         charge_creation_fee(creator);
 
@@ -291,6 +294,12 @@ module dao_factory::petra {
         assert!(
             !smart_table::contains(&registry.registered_tokens, governance_token),
             error::already_exists(E_DAO_ALREADY_EXISTS)
+        );
+
+        let launcher_registry = borrow_global<LauncherRegistry>(@dao_factory);
+        assert!(
+            !smart_table::contains(&launcher_registry.claimed_tokens, governance_token),
+            error::permission_denied(E_TOKEN_CLAIMED_BY_LAUNCHER)
         );
 
         let name = fungible_asset::name(governance_token);
@@ -424,10 +433,30 @@ module dao_factory::petra {
         creator: &signer,
         governance_token: Object<Metadata>,
         mint_ref: MintRef
-    ): address acquires FactoryConfig, DaoRegistry {
+    ): address acquires FactoryConfig, DaoRegistry, LauncherRegistry {
+        let launcher_registry = borrow_global<LauncherRegistry>(@dao_factory);
+        assert!(
+            !smart_table::contains(&launcher_registry.claimed_tokens, governance_token),
+            error::permission_denied(E_TOKEN_CLAIMED_BY_LAUNCHER)
+        );
+
         charge_creation_fee(creator);
         let config = borrow_global<FactoryConfig>(@dao_factory);
         create_dao_inflationary_internal(creator, governance_token, mint_ref, config, @0x0)
+    }
+
+    public fun claim_token_for_launcher(
+        launcher_signer: &signer,
+        governance_token: Object<Metadata>
+    ) acquires LauncherRegistry {
+        let launcher_address = signer::address_of(launcher_signer);
+        let launcher_registry = borrow_global_mut<LauncherRegistry>(@dao_factory);
+        assert!(
+            smart_table::contains(&launcher_registry.approved_launchers, launcher_address) && 
+            *smart_table::borrow(&launcher_registry.approved_launchers, launcher_address),
+            error::permission_denied(E_UNAUTHORIZED_LAUNCHER)
+        );
+        smart_table::add(&mut launcher_registry.claimed_tokens, governance_token, launcher_address);
     }
 
     // Inflationary DAO (Called exclusively by an approved Launcher)
