@@ -202,6 +202,16 @@ module dao_factory::anchor {
             // We reuse extract_proposal_action_guardian because both just extract action_target_address
             let target_address = ledger::extract_proposal_action_guardian(dao_address, proposal_id);
             ledger::claim_capability(dao_address, target_address);
+        } else if (proposal_type == 7) { // Module Settings
+            let (setting_type, target_address, string_bytes, bool_val) = ledger::get_proposal_action_module_setting(dao_address, proposal_id);
+            if (setting_type == 0) { // legacy::update_base_uri
+                dao_factory::legacy::update_base_uri(&dao_signer, std::string::utf8(string_bytes));
+            } else if (setting_type == 1) { // restore::set_whitelist
+                let token_metadata = object::address_to_object<supra_framework::fungible_asset::Metadata>(target_address);
+                dao_factory::restore::set_whitelist(&dao_signer, token_metadata, bool_val == 1);
+            } else {
+                abort error::invalid_argument(E_INVALID_ACTION)
+            };
         };
         
         event::emit(ProposalExecuted { dao_address, proposal_id });

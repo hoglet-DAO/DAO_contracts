@@ -81,17 +81,27 @@ module dao_factory::restore {
         amount: u64,
     }
 
+    #[event]
+    struct WhitelistUpdated has drop, store {
+        dao_address: address,
+        token: address,
+        is_allowed: bool,
+    }
+
     // Initialization 
 
     public(friend) fun initialize(dao_signer: &signer) {
         let constructor_ref = object::create_object(signer::address_of(dao_signer));
         
+        let whitelisted = smart_table::new();
+        smart_table::add(&mut whitelisted, @0xa, true);
+
         move_to(dao_signer, BribeRegistry {
             vault_extend_ref: object::generate_extend_ref(&constructor_ref),
             vault_address: object::address_from_constructor_ref(&constructor_ref),
             total_bribes: smart_table::new(),
             claims: smart_table::new(),
-            whitelisted_tokens: smart_table::new(),
+            whitelisted_tokens: whitelisted,
         });
     }
 
@@ -107,6 +117,11 @@ module dao_factory::restore {
         let registry = borrow_global_mut<BribeRegistry>(signer::address_of(dao_signer));
         let token_addr = object::object_address(&token_metadata);
         smart_table::upsert(&mut registry.whitelisted_tokens, token_addr, is_allowed);
+        event::emit(WhitelistUpdated {
+            dao_address: signer::address_of(dao_signer),
+            token: token_addr,
+            is_allowed,
+        });
     }
 
     // Deposits 
@@ -231,5 +246,20 @@ module dao_factory::restore {
         let key = BribeKey { pilgrim, gauge_id, token_addr };
         if (!smart_table::contains(&registry.total_bribes, key)) return 0;
         *smart_table::borrow(&registry.total_bribes, key)
+    }
+
+    #[view]
+    public fun has_claimed_bribe(
+        dao_address: address,
+        pilgrim: u64,
+        gauge_id: u64,
+        token_addr: address,
+        ve_token_addr: address,
+    ): bool acquires BribeRegistry {
+        if (!exists<BribeRegistry>(dao_address)) return false;
+        let registry = borrow_global<BribeRegistry>(dao_address);
+        let key = ClaimKey { pilgrim, gauge_id, token_addr, ve_token_addr };
+        if (!smart_table::contains(&registry.claims, key)) return false;
+        *smart_table::borrow(&registry.claims, key)
     }
 }

@@ -48,7 +48,7 @@ module dao_factory::legacy {
 
     const MIN_LOCK_EPOCHS: u64 = 3;    
     const MAX_LOCK_EPOCHS: u64 = 207;  
-    const PRECISION: u128      = 1_000_000_000_000;
+    const PRECISION: u256      = 1_000_000_000_000_000_000;
 
     struct VeTokenRegistry has key {
         total_locked: u64,
@@ -210,7 +210,7 @@ module dao_factory::legacy {
         
         if (registry.total_locked > 0 && amount > 0) {
             registry.acc_rebase_per_share = registry.acc_rebase_per_share 
-                + ((amount as u128) * PRECISION / (registry.total_locked as u128));
+                + (((amount as u256) * PRECISION / (registry.total_locked as u256)) as u128);
         };
         fungible_asset::deposit(registry.rebase_store, rebase_fa);
     }
@@ -239,12 +239,12 @@ module dao_factory::legacy {
         // as a liquid savings account that steals rebase from active lockers.
         let current_epoch = pilgrim::now();
         if (ve_data.end_epoch <= current_epoch) {
-            ve_data.rebase_debt = (ve_data.locked_amount as u128) * registry.acc_rebase_per_share / PRECISION;
+            ve_data.rebase_debt = (((ve_data.locked_amount as u256) * (registry.acc_rebase_per_share as u256) / PRECISION) as u128);
             harvest::checkpoint(ve_data.dao_address, obj_addr, ve_data.locked_amount);
             return
         };
 
-        let earned_u128 = (ve_data.locked_amount as u128) * registry.acc_rebase_per_share / PRECISION;
+        let earned_u128 = (((ve_data.locked_amount as u256) * (registry.acc_rebase_per_share as u256) / PRECISION) as u128);
         let pending_u128 = if (earned_u128 > ve_data.rebase_debt) { earned_u128 - ve_data.rebase_debt } else { 0 };
         let pending = (pending_u128 as u64);
 
@@ -275,7 +275,7 @@ module dao_factory::legacy {
             event::emit(RebaseCompounded { legacy: obj_addr, amount: pending });
         };
 
-        ve_data.rebase_debt = (ve_data.locked_amount as u128) * registry.acc_rebase_per_share / PRECISION;
+        ve_data.rebase_debt = (((ve_data.locked_amount as u256) * (registry.acc_rebase_per_share as u256) / PRECISION) as u128);
 
         // Checkpoint harvest rewards AFTER changing locked_amount
         harvest::checkpoint(ve_data.dao_address, obj_addr, ve_data.locked_amount);
@@ -283,8 +283,14 @@ module dao_factory::legacy {
 
     // SVG Generator (100% On-Chain Cyberpunk V5) 
 
-    fun format_compact(raw_amount: u64): String {
-        let amt = raw_amount / 100_000_000;
+    fun format_compact(raw_amount: u64, decimals: u8): String {
+        let divisor = 1;
+        let i = 0;
+        while (i < decimals) {
+            divisor = divisor * 10;
+            i = i + 1;
+        };
+        let amt = raw_amount / divisor;
         if (amt >= 1_000_000_000_000) {
             let whole = amt / 1_000_000_000_000;
             let frac = (amt % 1_000_000_000_000) / 100_000_000_000;
@@ -458,7 +464,7 @@ module dao_factory::legacy {
             end_epoch,
         });
 
-        let initial_debt = (amount as u128) * registry.acc_rebase_per_share / PRECISION;
+        let initial_debt = (((amount as u256) * (registry.acc_rebase_per_share as u256) / PRECISION) as u128);
 
         move_to(&obj_signer, VeToken {
             dao_address,
@@ -581,7 +587,7 @@ module dao_factory::legacy {
         ve_data.locked_amount = new_total;
         registry.total_locked = registry.total_locked + additional_amount;
 
-        ve_data.rebase_debt = (new_total as u128) * registry.acc_rebase_per_share / PRECISION;
+        ve_data.rebase_debt = (((new_total as u256) * (registry.acc_rebase_per_share as u256) / PRECISION) as u128);
 
         // Checkpoint for rewards (Must be called AFTER updating amount)
         harvest::checkpoint(ve_data.dao_address, obj_addr, new_total);
@@ -688,6 +694,7 @@ module dao_factory::legacy {
             let from_ve_data = borrow_global<VeToken>(from_legacy_addr);
             let into_ve_data = borrow_global<VeToken>(into_legacy_addr);
             assert!(from_ve_data.dao_address == into_ve_data.dao_address, error::invalid_argument(E_INVALID_OBJECT));
+            assert!(from_ve_data.end_epoch > pilgrim::now(), error::invalid_state(E_LOCK_EXPIRED));
             dao_address = from_ve_data.dao_address;
         };
 
@@ -784,7 +791,7 @@ module dao_factory::legacy {
 
             // Update rebase debt to prevent rebase drain exploit
             let registry = borrow_global<VeTokenRegistry>(dao_address);
-            into_ve_data.rebase_debt = (new_total as u128) * registry.acc_rebase_per_share / PRECISION;
+            into_ve_data.rebase_debt = (((new_total as u256) * (registry.acc_rebase_per_share as u256) / PRECISION) as u128);
 
             // Correctly update snapshots
             let len = smart_vector::length(&into_ve_data.snapshots);

@@ -116,6 +116,12 @@ module dao_factory::witness {
         let is_delegate = legacy::is_delegate(ve_token_obj, voter_addr);
         assert!(is_owner || is_delegate, error::permission_denied(E_NOT_AUTHORIZED));
 
+        // ANTI-EXPLOIT: Ensure the veToken being used belongs to this DAO
+        assert!(
+            legacy::get_dao_address(ve_token_obj) == dao_address, 
+            error::invalid_argument(E_NOT_AUTHORIZED)
+        );
+
         // The veToken cannot be expired.
         assert!(!legacy::is_expired(ve_token_obj), error::invalid_state(E_LOCK_EXPIRED));
 

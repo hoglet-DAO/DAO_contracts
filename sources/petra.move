@@ -47,8 +47,11 @@ module dao_factory::petra {
     const E_SYMBOL_TOO_LONG: u64 = 13;
     const E_UNAUTHORIZED_LAUNCHER: u64 = 14;
     const E_TOKEN_CLAIMED_BY_LAUNCHER: u64 = 15;
+    const E_INVALID_ADDRESS: u64 = 16;
+    const E_FEE_TOO_HIGH: u64 = 17;
 
     // Constants 
+    const MAX_CREATION_FEE: u64 = 100_000_000_000; // 1000 SUPRA (8 decimals)
     // The admin MUST transfer to a DAO.
 
     // Global State (Anti-Spam and Admin) 
@@ -177,6 +180,7 @@ module dao_factory::petra {
     // This is the correct way to complete the Ouroboros pattern.
     public entry fun transfer_admin(admin: &signer, new_admin: address) acquires FactoryConfig {
         assert_admin(admin);
+        assert!(new_admin != @0x0, error::invalid_argument(E_INVALID_ADDRESS));
         let config = borrow_global_mut<FactoryConfig>(@dao_factory);
         let old_admin = config.admin_address;
         config.admin_address = new_admin;
@@ -197,6 +201,7 @@ module dao_factory::petra {
 
     public entry fun set_creation_fee(admin: &signer, new_fee: u64) acquires FactoryConfig {
         assert_admin(admin);
+        assert!(new_fee <= MAX_CREATION_FEE, error::invalid_argument(E_FEE_TOO_HIGH));
         let config = borrow_global_mut<FactoryConfig>(@dao_factory);
         config.creation_fee = new_fee;
     }
@@ -353,10 +358,16 @@ module dao_factory::petra {
     }
 
     // Static DAO (Called exclusively by an approved Launcher)
+    // CRITICAL SAFETY WARNING: 
+    // The `expected_supply` parameter is used to permanently calculate governance thresholds at initialization.
+    // The caller (launcher) MUST mathematically guarantee that the final real token supply generated matches 
+    // this `expected_supply`. If the real supply ends up being significantly lower than `expected_supply`, 
+    // the DAO's proposal thresholds will be mathematically impossible to reach, freezing governance forever.
     public fun create_dao_static_from_launcher(
         creator: &signer,
         launcher_signer: &signer,
-        governance_token: Object<Metadata>
+        governance_token: Object<Metadata>,
+        expected_supply: u128
     ) acquires FactoryConfig, DaoRegistry, LauncherRegistry {
         let launcher_address = signer::address_of(launcher_signer);
         let launcher_registry = borrow_global<LauncherRegistry>(@dao_factory);
@@ -394,7 +405,7 @@ module dao_factory::petra {
 
         let supply_opt = fungible_asset::supply(governance_token);
         assert!(option::is_some(&supply_opt), error::invalid_argument(E_NO_SUPPLY_TRACKING));
-        let current_supply = *option::borrow(&supply_opt);
+        let current_supply = if (expected_supply > 0) { expected_supply } else { *option::borrow(&supply_opt) };
         assert!(current_supply > 0, error::invalid_argument(E_SUPPLY_ZERO));
 
         let dynamic_threshold = (((current_supply * (config.default_proposal_threshold_ppm as u128)) / 1000000) as u64);
@@ -442,7 +453,7 @@ module dao_factory::petra {
 
         charge_creation_fee(creator);
         let config = borrow_global<FactoryConfig>(@dao_factory);
-        create_dao_inflationary_internal(creator, governance_token, mint_ref, config, @0x0)
+        create_dao_inflationary_internal(creator, governance_token, option::some(mint_ref), config, @0x0, option::none(), option::none())
     }
 
     public fun claim_token_for_launcher(
@@ -460,11 +471,17 @@ module dao_factory::petra {
     }
 
     // Inflationary DAO (Called exclusively by an approved Launcher)
+    // CRITICAL SAFETY WARNING: 
+    // The `expected_supply` parameter establishes the baseline for proposal thresholds and emissions (`jubilee`).
+    // If a launcher passes a value that diverges from the final minted supply (e.g., due to a logic bug in a launcher upgrade),
+    // the DAO will be permanently bricked as it will be mathematically impossible to reach the quorum/threshold to vote.
+    // Future upgrades to the launcher MUST preserve the mathematical integrity of this projection.
     public fun create_dao_inflationary_from_launcher(
         creator: &signer,
         launcher_signer: &signer,
         governance_token: Object<Metadata>,
-        mint_ref: MintRef
+        expected_supply: u128,
+        amm_pool_address_opt: option::Option<address>
     ): address acquires FactoryConfig, DaoRegistry, LauncherRegistry {
         let launcher_address = signer::address_of(launcher_signer);
         let launcher_registry = borrow_global<LauncherRegistry>(@dao_factory);
@@ -476,15 +493,17 @@ module dao_factory::petra {
 
         charge_creation_fee(creator);
         let config = borrow_global<FactoryConfig>(@dao_factory);
-        create_dao_inflationary_internal(creator, governance_token, mint_ref, config, launcher_address)
+        create_dao_inflationary_internal(creator, governance_token, option::none(), config, launcher_address, option::some(expected_supply), amm_pool_address_opt)
     }
 
     fun create_dao_inflationary_internal(
         creator: &signer,
         governance_token: Object<Metadata>,
-        mint_ref: MintRef,
+        mint_ref_opt: option::Option<MintRef>,
         config: &FactoryConfig,
-        launcher_address: address
+        launcher_address: address,
+        expected_supply_opt: option::Option<u128>,
+        amm_pool_address_opt: option::Option<address>
     ): address acquires DaoRegistry {
         let registry = borrow_global_mut<DaoRegistry>(@dao_factory);
         assert!(
@@ -510,7 +529,7 @@ module dao_factory::petra {
 
         let supply_opt = fungible_asset::supply(governance_token);
         assert!(option::is_some(&supply_opt), error::invalid_argument(E_NO_SUPPLY_TRACKING));
-        let current_supply = *option::borrow(&supply_opt);
+        let current_supply = if (option::is_some(&expected_supply_opt)) { *option::borrow(&expected_supply_opt) } else { *option::borrow(&supply_opt) };
         assert!(current_supply > 0, error::invalid_argument(E_SUPPLY_ZERO));
 
         let dynamic_threshold = (((current_supply * (config.default_proposal_threshold_ppm as u128)) / 1000000) as u64);
@@ -533,17 +552,20 @@ module dao_factory::petra {
         let constructor_ref = object::create_object(dao_address);
         harvest::initialize(&dao_signer, governance_token, &constructor_ref);
 
-        zeal::initialize(&dao_signer, dao_address);
+        zeal::initialize(&dao_signer, dao_address, amm_pool_address_opt);
         restore::initialize(&dao_signer);
         sentinel::initialize(&dao_signer);
-        jubilee::initialize(
-            &dao_signer,
-            mint_ref,
-            dynamic_initial_emission,
-            config.default_decay_bps,
-            dynamic_tail_emission,
-            config.default_gauge_split_bps
-        );
+        if (option::is_some(&mint_ref_opt)) {
+            let mint_ref = option::extract(&mut mint_ref_opt);
+            jubilee::initialize(
+                &dao_signer,
+                mint_ref,
+                dynamic_initial_emission,
+                config.default_decay_bps,
+                dynamic_tail_emission,
+                config.default_gauge_split_bps
+            );
+        };
 
         smart_table::add(&mut registry.registered_tokens, governance_token, dao_address);
 
@@ -562,6 +584,44 @@ module dao_factory::petra {
     public entry fun activate_dao(launcher_signer: &signer, dao_address: address) {
         charter::set_active(launcher_signer, dao_address);
         jubilee::sync_clock(dao_address);
+    }
+
+    public fun activate_dao_inflationary(
+        launcher_signer: &signer,
+        dao_address: address,
+        governance_token: Object<Metadata>,
+        mint_ref: MintRef
+    ) acquires FactoryConfig, LauncherRegistry {
+        let launcher_address = signer::address_of(launcher_signer);
+        let launcher_registry = borrow_global<LauncherRegistry>(@dao_factory);
+        assert!(
+            smart_table::contains(&launcher_registry.approved_launchers, launcher_address) && 
+            *smart_table::borrow(&launcher_registry.approved_launchers, launcher_address),
+            error::permission_denied(E_UNAUTHORIZED_LAUNCHER)
+        );
+
+        let config = borrow_global<FactoryConfig>(@dao_factory);
+        let supply_opt = fungible_asset::supply(governance_token);
+        assert!(option::is_some(&supply_opt), error::invalid_argument(E_NO_SUPPLY_TRACKING));
+        let current_supply = *option::borrow(&supply_opt);
+
+        let dynamic_initial_emission = (((current_supply * (config.default_initial_emission_ppm as u128)) / 1000000) as u64);
+        let dynamic_tail_emission = (((current_supply * (config.default_tail_emission_ppm as u128)) / 1000000) as u64);
+        let dynamic_threshold = (((current_supply * (config.default_proposal_threshold_ppm as u128)) / 1000000) as u64);
+
+        let dao_signer = ledger::generate_signer(dao_address);
+        charter::update_proposal_threshold(&dao_signer, dynamic_threshold);
+
+        jubilee::initialize(
+            &dao_signer,
+            mint_ref,
+            dynamic_initial_emission,
+            config.default_decay_bps,
+            dynamic_tail_emission,
+            config.default_gauge_split_bps
+        );
+
+        charter::set_active(launcher_signer, dao_address);
     }
 
     // Views 

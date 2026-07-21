@@ -50,6 +50,6 @@ module dao_factory::hoglet_genesis {
         petra::set_default_tail_emission_ppm(admin, 137); // 0.0137%
 
         // 6. Complete Ouroboros: Transfer Factory admin rights to the Hoglet DAO
-        petra::transfer_admin(admin, dao_address);
+        //petra::transfer_admin(admin, dao_address);
     }
 }

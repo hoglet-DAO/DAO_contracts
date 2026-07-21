@@ -311,4 +311,25 @@ module dao_factory::foundry {
         if (!exists<Gauge>(gauge_addr)) return 0;
         borrow_global<Gauge>(gauge_addr).period_finish
     }
+
+    #[view]
+    public fun reward_per_token(gauge_addr: address): u128 acquires Gauge {
+        if (!exists<Gauge>(gauge_addr)) return 0;
+        let gauge = borrow_global<Gauge>(gauge_addr);
+        
+        let current_time = timestamp::now_seconds();
+        let last_time_reward_applicable = if (current_time < gauge.period_finish) {
+            current_time
+        } else {
+            gauge.period_finish
+        };
+
+        if (gauge.total_supply == 0) {
+            return gauge.reward_per_token_stored
+        };
+
+        let time_delta = ((last_time_reward_applicable - gauge.last_update_time) as u128);
+        let reward_increment = math128::mul_div(time_delta * REWARD_SCALE, gauge.reward_rate, gauge.total_supply);
+        gauge.reward_per_token_stored + reward_increment
+    }
 }

@@ -112,6 +112,12 @@ module dao_factory::herald {
             error::permission_denied(E_BELOW_THRESHOLD)
         );
 
+        // ANTI-EXPLOIT: Ensure the veToken belongs to the target DAO
+        assert!(
+            legacy::get_dao_address(legacy) == dao_address, 
+            error::permission_denied(E_BELOW_THRESHOLD)
+        );
+
         let (_, voting_delay, voting_period, proposal_threshold, _, _, _, _) = charter::get_dao_config_view(dao_address);
 
         // Read voting power in the PREVIOUS epoch (anti-flash-loan).
@@ -468,6 +474,53 @@ module dao_factory::herald {
             action_amount: 0,
             action_config_key: (action_type as u64),
             action_config_value: gauge_id,
+        });
+    }
+
+    public entry fun propose_module_setting(
+        proposer: &signer,
+        legacy_addr: address,
+        dao_address: address,
+        title: String,
+        description_hash: vector<u8>,
+        setting_type: u8,
+        target_address: address,
+        string_value: String,
+        bool_value: bool,
+    ) acquires HeraldState {
+        let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required) = 
+            validate_and_prepare_proposal(proposer, legacy_addr, dao_address, true);
+
+        let new_proposal = ledger::new_module_setting_proposal(
+            proposal_id,
+            proposer_addr,
+            ve_token_addr,
+            title,
+            description_hash,
+            start_time,
+            end_time,
+            quorum_required,
+            setting_type,
+            target_address,
+            *std::string::bytes(&string_value),
+            if (bool_value) 1 else 0,
+        );
+        ledger::add_proposal(dao_address, proposal_id, new_proposal);
+
+        event::emit(ProposalCreated {
+            dao_address,
+            proposal_id,
+            proposer: proposer_addr,
+            title,
+            proposal_type: 7, // Module Setting
+            start_time,
+            end_time,
+            action_target_address: target_address,
+            action_asset_address: @0x0,
+            action_recipient: @0x0,
+            action_amount: 0,
+            action_config_key: (setting_type as u64),
+            action_config_value: if (bool_value) 1 else 0,
         });
     }
 }

@@ -17,12 +17,14 @@ module dao_factory::jubilee {
     use dao_factory::pilgrim;
     use dao_factory::legacy;
     use dao_factory::zeal;
+    use dao_factory::charter;
 
     // Errors 
     const E_ALREADY_MINTED: u64 = 1;
     const E_INVALID_BPS: u64    = 2;
     const E_MINT_EXCEEDED: u64  = 3;
     const E_TOO_MANY_EPOCHS: u64 = 4;
+    const E_NOT_ACTIVE: u64     = 5;
 
     // Constants 
     // 1 Quintillion (10,000,000,000 with 8 decimals). Physical limit to prevent exploits.
@@ -91,6 +93,7 @@ module dao_factory::jubilee {
     // Advances the epoch for the DAO, emitting inflation and distributing.
     // Anyone can call this function (Keeper or Bot).
     public entry fun advance_epoch(dao_address: address) acquires MinterConfig {
+        assert!(charter::is_active(dao_address), error::invalid_state(E_NOT_ACTIVE));
         let current_epoch = pilgrim::now();
         let config = borrow_global_mut<MinterConfig>(dao_address);
         

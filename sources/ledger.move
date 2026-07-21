@@ -457,6 +457,35 @@ module dao_factory::ledger {
         }
     }
 
+    // Manual proposal constructor for Module Settings
+    public(friend) fun new_module_setting_proposal(
+        id: u64,
+        proposer: address,
+        proposer_ve_token: address,
+        title: String,
+        description_hash: vector<u8>,
+        start_time: u64,
+        end_time: u64,
+        quorum_required: u64,
+        setting_type: u8,
+        target_address: address,
+        string_value: vector<u8>,
+        bool_value: u64
+    ): Proposal {
+        Proposal {
+            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time, eta: 0,
+            executed: false, canceled: false, quorum_reached_historically: false,
+            for_votes: 0, against_votes: 0, abstain_votes: 0,
+            upgrade_metadata: string_value, upgrade_code: vector::empty(), quorum_required,
+            proposal_type: 7, // Module Settings
+            action_recipient: @0x0,
+            action_amount: 0,
+            action_config_key: setting_type,
+            action_config_value: bool_value,
+            action_target_address: target_address,
+        }
+    }
+
     // Manual proposal constructor for Guardian Update action
     public(friend) fun new_guardian_proposal(
         id: u64,
@@ -614,6 +643,14 @@ module dao_factory::ledger {
         assert!(smart_table::contains(&dao_state.proposals, proposal_id), error::not_found(E_PROPOSAL_NOT_FOUND));
         let proposal = smart_table::borrow(&dao_state.proposals, proposal_id);
         (proposal.action_config_key, proposal.action_target_address, proposal.action_config_value)
+    }
+
+    #[view]
+    public fun get_proposal_action_module_setting(dao_address: address, proposal_id: u64): (u8, address, vector<u8>, u64) acquires DaoState {
+        let dao_state = borrow_global<DaoState>(dao_address);
+        assert!(smart_table::contains(&dao_state.proposals, proposal_id), error::not_found(E_PROPOSAL_NOT_FOUND));
+        let proposal = smart_table::borrow(&dao_state.proposals, proposal_id);
+        (proposal.action_config_key, proposal.action_target_address, proposal.upgrade_metadata, proposal.action_config_value)
     }
 
     // Dynamic Quorum (Rolling Average) 

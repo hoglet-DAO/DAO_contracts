@@ -12,6 +12,7 @@ module dao_factory::zeal {
     use supra_framework::fungible_asset::{Self, FungibleAsset, Metadata};
     use supra_framework::primary_fungible_store;
     use supra_framework::object::{Self, ExtendRef};
+    use std::option::{Self, Option};
 
     use supra_framework::event;
     use std::error;
@@ -109,12 +110,20 @@ module dao_factory::zeal {
         amount: u64,
     }
 
+    #[event]
+    struct GaugeStatusChanged has drop, store {
+        dao_address: address,
+        gauge_id: u64,
+        is_active: bool,
+    }
+
     // Initialization 
 
     public(friend) fun initialize(
         dao_signer: &signer,
         default_destination: address,
-    ) {
+        amm_pool_address_opt: Option<address>,
+    ) acquires GaugeRegistry {
         let constructor_ref = object::create_object(signer::address_of(dao_signer));
 
         move_to(dao_signer, GaugeRegistry {
@@ -129,6 +138,11 @@ module dao_factory::zeal {
             claimed_emissions: smart_table::new(),
             default_destination,
         });
+
+        if (option::is_some(&amm_pool_address_opt)) {
+            let pool_address = option::extract(&mut amm_pool_address_opt);
+            create_gauge(dao_signer, pool_address);
+        };
     }
 
     #[view]
@@ -169,6 +183,12 @@ module dao_factory::zeal {
         
         let gauge = smart_table::borrow_mut(&mut registry.gauges, gauge_id);
         gauge.is_active = is_active;
+
+        event::emit(GaugeStatusChanged {
+            dao_address,
+            gauge_id,
+            is_active,
+        });
     }
 
     // Core Functions 
@@ -406,5 +426,27 @@ module dao_factory::zeal {
             i = i + 1;
         };
         0
+    }
+
+    #[view]
+    public fun get_epoch_total_votes(dao_address: address, pilgrim: u64): u128 acquires GaugeRegistry {
+        if (!exists<GaugeRegistry>(dao_address)) return 0;
+        let registry = borrow_global<GaugeRegistry>(dao_address);
+        if (!smart_table::contains(&registry.epoch_total_votes, pilgrim)) return 0;
+        *smart_table::borrow(&registry.epoch_total_votes, pilgrim)
+    }
+
+    #[view]
+    public fun is_gauge_emission_claimed(
+        dao_address: address,
+        pilgrim: u64,
+        gauge_id: u64
+    ): bool acquires GaugeRegistry {
+        if (!exists<GaugeRegistry>(dao_address)) return false;
+        let registry = borrow_global<GaugeRegistry>(dao_address);
+        if (!smart_table::contains(&registry.claimed_emissions, pilgrim)) return false;
+        let epoch_claims = smart_table::borrow(&registry.claimed_emissions, pilgrim);
+        if (!smart_table::contains(epoch_claims, gauge_id)) return false;
+        *smart_table::borrow(epoch_claims, gauge_id)
     }
 }
