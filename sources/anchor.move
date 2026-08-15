@@ -58,7 +58,7 @@ module dao_factory::anchor {
     // Queues an approved proposal for execution after the timelock.
     // Anyone can call this function if the proposal meets the conditions.
     public entry fun queue_proposal(_caller: &signer, dao_address: address, proposal_id: u64) {
-        let (_, _, end_time, eta, executed, canceled, for_votes, against_votes, _abstain_votes) = ledger::get_proposal_details(dao_address, proposal_id);
+        let (_, _, end_time, eta, executed, canceled, for_votes, against_votes, abstain_votes) = ledger::get_proposal_details(dao_address, proposal_id);
         let current_time = timestamp::now_seconds();
         
         // Voting must have ended and DAO must be active
@@ -72,10 +72,10 @@ module dao_factory::anchor {
         
         let quorum_required = ledger::get_proposal_quorum(dao_address, proposal_id);
         
-        let total_supporting = for_votes;
+        let total_participation = for_votes + against_votes + abstain_votes;
         
         // Must reach quorum AND have more for votes than against votes
-        assert!(total_supporting >= quorum_required && for_votes > against_votes, error::invalid_state(E_PROPOSAL_NOT_SUCCEEDED));
+        assert!(total_participation >= quorum_required && for_votes > against_votes, error::invalid_state(E_PROPOSAL_NOT_SUCCEEDED));
         
         let timelock_delay = charter::get_timelock_delay(dao_address);
         let eta = current_time + timelock_delay;
@@ -219,7 +219,7 @@ module dao_factory::anchor {
     // Anyone can cancel a proposal if the proposer's voting power drops below the required threshold.
     // This acts as a decentralized immune system against proposers who lose their community backing.
     public entry fun public_cancel_proposal(_caller: &signer, dao_address: address, proposal_id: u64) {
-        let (proposer, _, _, _, _, _, _, _, _) = ledger::get_proposal_details(dao_address, proposal_id);
+        let (proposer, start_time, _, _, _, _, _, _, _) = ledger::get_proposal_details(dao_address, proposal_id);
         let (_, _, _, proposal_threshold, _, _, _, _) = charter::get_dao_config_view(dao_address);
         let ve_token_addr = ledger::get_proposal_ve_token(dao_address, proposal_id);
         
@@ -230,8 +230,8 @@ module dao_factory::anchor {
         let current_power = if (object::object_exists<legacy::VeToken>(ve_token_addr)) {
             let ve_token_obj = object::address_to_object<legacy::VeToken>(ve_token_addr);
             if (object::is_owner(ve_token_obj, proposer)) {
-                // Check power in the current epoch to see if it dropped
-                legacy::get_voting_power_at(ve_token_obj, pilgrim::now())
+                // Check power at the time the proposal was created to avoid natural time decay griefing
+                legacy::get_voting_power_at(ve_token_obj, start_time)
             } else {
                 0
             }
@@ -293,12 +293,7 @@ module dao_factory::anchor {
 
     /// Allows anyone to wrap legacy coins residing in the DAO's CoinStore into Fungible Assets.
     /// This is a permissionless maintenance crank to ensure the treasury remains FA-native.
-    public entry fun wrap_legacy_coins<CoinType>(caller: &signer, dao_address: address) {
-        let caller_addr = signer::address_of(caller);
-        let guardian_opt = charter::get_guardian(dao_address);
-        assert!(std::option::is_some(&guardian_opt), error::invalid_state(E_NO_GUARDIAN_CONFIGURED));
-        assert!(caller_addr == *std::option::borrow(&guardian_opt), error::permission_denied(E_NOT_GUARDIAN));
-
+    public entry fun wrap_legacy_coins<CoinType>(_caller: &signer, dao_address: address) {
         let balance = coin::balance<CoinType>(dao_address);
         assert!(balance > 0, error::invalid_state(E_NO_COINS_TO_WRAP));
 
@@ -321,7 +316,7 @@ module dao_factory::anchor {
         sentinel::assert_not_paused(dao_address);
         assert!(charter::is_active(dao_address), error::invalid_state(E_PROPOSAL_NOT_ACTIVE));
 
-        let (_, _, _, eta, executed, canceled, for_votes, against_votes, _) = ledger::get_proposal_details(dao_address, proposal_id);
+        let (_, _, _, eta, executed, canceled, for_votes, against_votes, abstain_votes) = ledger::get_proposal_details(dao_address, proposal_id);
         
         assert!(eta != 0, error::invalid_state(E_TIMELOCK_NOT_READY)); 
         assert!(timestamp::now_seconds() >= eta, error::invalid_state(E_TIMELOCK_NOT_READY)); 
@@ -333,7 +328,8 @@ module dao_factory::anchor {
         assert!(!canceled, error::invalid_state(E_ALREADY_CANCELED));
         
         let quorum_required = ledger::get_proposal_quorum(dao_address, proposal_id);
-        assert!(for_votes >= quorum_required, error::invalid_state(E_PROPOSAL_NOT_SUCCEEDED));
+        let total_participation = for_votes + against_votes + abstain_votes;
+        assert!(total_participation >= quorum_required, error::invalid_state(E_PROPOSAL_NOT_SUCCEEDED));
         assert!(for_votes > against_votes, error::invalid_state(E_PROPOSAL_DEFEATED));
         
         ledger::set_proposal_executed(dao_address, proposal_id);
