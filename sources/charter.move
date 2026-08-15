@@ -39,6 +39,11 @@ module dao_factory::charter {
         guardian: Option<address>,
         is_active: bool,
         launcher_address: address,
+        // Type of DAO: true = inflationary ve(3,3) engine (jubilee minter,
+        // zeal gauges, restore bribes, boost_registry); false = static
+        // (pure governance). Set once at creation by petra and immutable.
+        // SINGLE SOURCE OF TRUTH for the DAO type across all modules.
+        is_inflationary: bool,
     }
 
     #[event]
@@ -75,7 +80,8 @@ module dao_factory::charter {
         timelock_delay: u64,
         grace_period: u64,
         guardian: Option<address>,
-        launcher_address: address
+        launcher_address: address,
+        is_inflationary: bool
     ) {
         assert!(voting_delay >= MIN_DELAY_SECONDS && voting_delay <= MAX_DELAY_SECONDS, error::invalid_argument(E_INVALID_DELAY));
         assert!(voting_period >= MIN_PERIOD_SECONDS && voting_period <= MAX_DELAY_SECONDS, error::invalid_argument(E_INVALID_PERIOD));
@@ -101,13 +107,19 @@ module dao_factory::charter {
             proposal_count: 0, // Starts with 0 proposals
             guardian,
             is_active: (launcher_address == @0x0),
-            launcher_address
+            launcher_address,
+            is_inflationary
         });
     }
 
-    // Public view function to check if the DAO is active
-    public fun is_active(dao_address: address): bool acquires DaoConfig {
-        borrow_global<DaoConfig>(dao_address).is_active
+    // Single source of truth for the DAO type. Returns true if the DAO was
+    // created with the inflationary ve(3,3) engine (jubilee, zeal, restore,
+    // boost_registry). Returns false for static DAOs and for addresses
+    // without a DaoConfig.
+    #[view]
+    public fun is_inflationary(dao_address: address): bool acquires DaoConfig {
+        if (!exists<DaoConfig>(dao_address)) return false;
+        borrow_global<DaoConfig>(dao_address).is_inflationary
     }
 
     // Function to activate the DAO (Called by petra)
@@ -164,77 +176,30 @@ module dao_factory::charter {
         };
     }
 
-    // Admin: Modify Quorum (must be called by the DAO itself through execute_proposal)
-    public(friend) fun update_super_quorum(dao_signer: &signer, new_quorum: u64) acquires DaoConfig {
-        let dao_address = std::signer::address_of(dao_signer);
-        validate_config_value(dao_address, 0, new_quorum);
+    // Admin: Modify Configuration (must be called by the DAO itself through execute_proposal)
+    public(friend) fun update_config(dao_signer: &signer, config_key: u8, config_value: u64) acquires DaoConfig {
+        let dao_address = prepare_update(dao_signer, config_key, config_value);
         let config = borrow_global_mut<DaoConfig>(dao_address);
-        config.super_quorum_threshold = new_quorum;
-        event::emit(DaoConfigUpdated { dao_address, config_key: 0, config_value: new_quorum });
+        
+        if (config_key == 0) config.super_quorum_threshold = config_value
+        else if (config_key == 1) config.quorum_numerator = config_value
+        else if (config_key == 2) config.quorum_denominator = config_value
+        else if (config_key == 3) config.late_quorum_extension = config_value
+        else if (config_key == 4) config.voting_delay = config_value
+        else if (config_key == 5) config.voting_period = config_value
+        else if (config_key == 6) config.proposal_threshold = config_value
+        else if (config_key == 7) config.timelock_delay = config_value
+        else if (config_key == 8) config.grace_period = config_value
+        else abort error::invalid_argument(E_INVALID_DELAY);
     }
 
-    public(friend) fun update_quorum_numerator(dao_signer: &signer, new_numerator: u64) acquires DaoConfig {
-        let dao_address = std::signer::address_of(dao_signer);
-        validate_config_value(dao_address, 1, new_numerator);
-        let config = borrow_global_mut<DaoConfig>(dao_address);
-        config.quorum_numerator = new_numerator;
-        event::emit(DaoConfigUpdated { dao_address, config_key: 1, config_value: new_numerator });
-    }
+    // --- Helpers for Deduplication ---
 
-    public(friend) fun update_quorum_denominator(dao_signer: &signer, new_denominator: u64) acquires DaoConfig {
+    fun prepare_update(dao_signer: &signer, config_key: u8, config_value: u64): address acquires DaoConfig {
         let dao_address = std::signer::address_of(dao_signer);
-        validate_config_value(dao_address, 2, new_denominator);
-        let config = borrow_global_mut<DaoConfig>(dao_address);
-        config.quorum_denominator = new_denominator;
-        event::emit(DaoConfigUpdated { dao_address, config_key: 2, config_value: new_denominator });
-    }
-
-    public(friend) fun update_late_quorum_extension(dao_signer: &signer, new_extension: u64) acquires DaoConfig {
-        let dao_address = std::signer::address_of(dao_signer);
-        validate_config_value(dao_address, 3, new_extension);
-        let config = borrow_global_mut<DaoConfig>(dao_address);
-        config.late_quorum_extension = new_extension;
-        event::emit(DaoConfigUpdated { dao_address, config_key: 3, config_value: new_extension });
-    }
-
-    public(friend) fun update_voting_delay(dao_signer: &signer, new_delay: u64) acquires DaoConfig {
-        let dao_address = std::signer::address_of(dao_signer);
-        validate_config_value(dao_address, 4, new_delay);
-        let config = borrow_global_mut<DaoConfig>(dao_address);
-        config.voting_delay = new_delay;
-        event::emit(DaoConfigUpdated { dao_address, config_key: 4, config_value: new_delay });
-    }
-
-    public(friend) fun update_voting_period(dao_signer: &signer, new_period: u64) acquires DaoConfig {
-        let dao_address = std::signer::address_of(dao_signer);
-        validate_config_value(dao_address, 5, new_period);
-        let config = borrow_global_mut<DaoConfig>(dao_address);
-        config.voting_period = new_period;
-        event::emit(DaoConfigUpdated { dao_address, config_key: 5, config_value: new_period });
-    }
-
-    public(friend) fun update_proposal_threshold(dao_signer: &signer, new_threshold: u64) acquires DaoConfig {
-        let dao_address = std::signer::address_of(dao_signer);
-        validate_config_value(dao_address, 6, new_threshold);
-        let config = borrow_global_mut<DaoConfig>(dao_address);
-        config.proposal_threshold = new_threshold;
-        event::emit(DaoConfigUpdated { dao_address, config_key: 6, config_value: new_threshold });
-    }
-
-    public(friend) fun update_timelock_delay(dao_signer: &signer, new_delay: u64) acquires DaoConfig {
-        let dao_address = std::signer::address_of(dao_signer);
-        validate_config_value(dao_address, 7, new_delay);
-        let config = borrow_global_mut<DaoConfig>(dao_address);
-        config.timelock_delay = new_delay;
-        event::emit(DaoConfigUpdated { dao_address, config_key: 7, config_value: new_delay });
-    }
-
-    public(friend) fun update_grace_period(dao_signer: &signer, new_grace_period: u64) acquires DaoConfig {
-        let dao_address = std::signer::address_of(dao_signer);
-        validate_config_value(dao_address, 8, new_grace_period);
-        let config = borrow_global_mut<DaoConfig>(dao_address);
-        config.grace_period = new_grace_period;
-        event::emit(DaoConfigUpdated { dao_address, config_key: 8, config_value: new_grace_period });
+        validate_config_value(dao_address, config_key, config_value);
+        event::emit(DaoConfigUpdated { dao_address, config_key, config_value });
+        dao_address
     }
 
     public(friend) fun update_guardian(dao_signer: &signer, new_guardian: Option<address>) acquires DaoConfig {
@@ -253,13 +218,17 @@ module dao_factory::charter {
     // ==========================================
     // VIEW FUNCTIONS (For the Frontend)
     // ==========================================
-
+    
     #[view]
     public fun get_proposal_count(dao_address: address): u64 acquires DaoConfig {
         borrow_global<DaoConfig>(dao_address).proposal_count
     }
-
+    
     #[view]
+    public fun is_active(dao_address: address): bool acquires DaoConfig {
+        borrow_global<DaoConfig>(dao_address).is_active
+    }
+
     public fun get_dao_config_view(dao_address: address): (String, u64, u64, u64, u64, u64, u64, u64) acquires DaoConfig {
         let config = borrow_global<DaoConfig>(dao_address);
         (

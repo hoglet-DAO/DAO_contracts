@@ -38,7 +38,7 @@ module dao_factory::ledger {
         upgrade_metadata: vector<u8>,
         upgrade_code: vector<vector<u8>>,
         quorum_required: u64,
-        proposal_type: u8, // 0 = Upgrade, 1 = Treasury, 2 = Config, 3 = Gauge
+        proposal_type: u8, // 0 = Upgrade, 1 = Treasury, 2 = Config, 3 = Gauge, 4 = Guardian, 5 = NFT Transfer, 6 = Claim Capability, 7 = Module Settings, 8 = NFT Boost Collection
         action_recipient: address,
         action_amount: u64,
         action_config_key: u8,
@@ -140,7 +140,7 @@ module dao_factory::ledger {
         smart_table::add(&mut state.capabilities, target_address, signer_cap);
         smart_table::add(&mut state.account_labels, target_address, label);
     }
-
+    
     #[view]
     public fun has_capability(dao_address: address, target_address: address): bool acquires DaoState {
         if (!exists<DaoState>(dao_address)) return false;
@@ -162,7 +162,7 @@ module dao_factory::ledger {
             std::string::utf8(b"Unknown Account")
         }
     }
-
+    
     // --- OFFER / CLAIM CAPABILITY SYSTEM ---
 
     // Developers call this to offer their contract's capability to the DAO
@@ -222,7 +222,7 @@ module dao_factory::ledger {
     }
 
     // --- VIEW FUNCTIONS FOR OFFERS VAULT ---
-
+    
     #[view]
     public fun get_pending_offer_details(dao_address: address, target_address: address): (bool, String, address) acquires OffersVault {
         if (!exists<OffersVault>(dao_address)) {
@@ -250,76 +250,103 @@ module dao_factory::ledger {
 
     public(friend) fun set_proposal_eta(dao_address: address, proposal_id: u64, eta: u64) acquires DaoState { 
         let state = borrow_global_mut<DaoState>(dao_address);
-        smart_table::borrow_mut(&mut state.proposals, proposal_id).eta = eta; 
+        get_proposal_mut_safe(state, proposal_id).eta = eta; 
     }
     public(friend) fun set_proposal_executed(dao_address: address, proposal_id: u64) acquires DaoState { 
         let state = borrow_global_mut<DaoState>(dao_address);
-        smart_table::borrow_mut(&mut state.proposals, proposal_id).executed = true; 
+        get_proposal_mut_safe(state, proposal_id).executed = true; 
     }
     public(friend) fun set_proposal_canceled(dao_address: address, proposal_id: u64) acquires DaoState { 
         let state = borrow_global_mut<DaoState>(dao_address);
-        let p = smart_table::borrow_mut(&mut state.proposals, proposal_id);
+        let p = get_proposal_mut_safe(state, proposal_id);
         p.canceled = true; 
         p.eta = 0; 
     }
     public(friend) fun set_proposal_end_time(dao_address: address, proposal_id: u64, end_time: u64) acquires DaoState { 
         let state = borrow_global_mut<DaoState>(dao_address);
-        smart_table::borrow_mut(&mut state.proposals, proposal_id).end_time = end_time; 
+        get_proposal_mut_safe(state, proposal_id).end_time = end_time; 
     }
     public(friend) fun set_quorum_reached(dao_address: address, proposal_id: u64) acquires DaoState { 
         let state = borrow_global_mut<DaoState>(dao_address);
-        smart_table::borrow_mut(&mut state.proposals, proposal_id).quorum_reached_historically = true; 
+        get_proposal_mut_safe(state, proposal_id).quorum_reached_historically = true; 
     }
-    public(friend) fun add_for_votes(dao_address: address, proposal_id: u64, weight: u64) acquires DaoState { 
+    public(friend) fun add_votes(dao_address: address, proposal_id: u64, support: u8, weight: u64) acquires DaoState { 
         let state = borrow_global_mut<DaoState>(dao_address);
-        let p = smart_table::borrow_mut(&mut state.proposals, proposal_id);
-        p.for_votes = p.for_votes + weight; 
-    }
-    public(friend) fun add_against_votes(dao_address: address, proposal_id: u64, weight: u64) acquires DaoState { 
-        let state = borrow_global_mut<DaoState>(dao_address);
-        let p = smart_table::borrow_mut(&mut state.proposals, proposal_id);
-        p.against_votes = p.against_votes + weight; 
-    }
-    public(friend) fun add_abstain_votes(dao_address: address, proposal_id: u64, weight: u64) acquires DaoState { 
-        let state = borrow_global_mut<DaoState>(dao_address);
-        let p = smart_table::borrow_mut(&mut state.proposals, proposal_id);
-        p.abstain_votes = p.abstain_votes + weight; 
+        let p = get_proposal_mut_safe(state, proposal_id);
+        if (support == 0) { p.against_votes = p.against_votes + weight; }
+        else if (support == 1) { p.for_votes = p.for_votes + weight; }
+        else { p.abstain_votes = p.abstain_votes + weight; };
     }
 
     // Extracts the arguments for a Treasury Transfer proposal (asset_address, recipient, amount)
     public(friend) fun extract_proposal_action_treasury(dao_address: address, proposal_id: u64): (address, address, u64) acquires DaoState {
-        let dao_state = borrow_global<DaoState>(dao_address);
-        let proposal = smart_table::borrow(&dao_state.proposals, proposal_id);
+        let state = borrow_global<DaoState>(dao_address);
+        let proposal = get_proposal_safe(state, proposal_id);
         (proposal.action_target_address, proposal.action_recipient, proposal.action_amount)
     }
 
     // Extracts the arguments for a NFT Transfer proposal (nft_address, recipient)
     public(friend) fun extract_proposal_action_nft(dao_address: address, proposal_id: u64): (address, address) acquires DaoState {
-        let dao_state = borrow_global<DaoState>(dao_address);
-        let proposal = smart_table::borrow(&dao_state.proposals, proposal_id);
+        let state = borrow_global<DaoState>(dao_address);
+        let proposal = get_proposal_safe(state, proposal_id);
         (proposal.action_target_address, proposal.action_recipient)
     }
 
     // Extracts the arguments for a Guardian Update proposal (new_guardian)
     public(friend) fun extract_proposal_action_guardian(dao_address: address, proposal_id: u64): address acquires DaoState {
-        let dao_state = borrow_global<DaoState>(dao_address);
-        let proposal = smart_table::borrow(&dao_state.proposals, proposal_id);
+        let state = borrow_global<DaoState>(dao_address);
+        let proposal = get_proposal_safe(state, proposal_id);
         proposal.action_target_address
     }
 
     // Gets the upgrade code data (deep copies) + target address
     public(friend) fun get_proposal_upgrade_data(dao_address: address, proposal_id: u64): (vector<u8>, vector<vector<u8>>, address) acquires DaoState {
         let state = borrow_global<DaoState>(dao_address);
-        let p = smart_table::borrow(&state.proposals, proposal_id);
+        let p = get_proposal_safe(state, proposal_id);
         (*&p.upgrade_metadata, *&p.upgrade_code, p.action_target_address)
     }
     
     public(friend) fun get_proposal_quorum_reached(dao_address: address, proposal_id: u64): bool acquires DaoState {
         let state = borrow_global<DaoState>(dao_address);
-        smart_table::borrow(&state.proposals, proposal_id).quorum_reached_historically
+        get_proposal_safe(state, proposal_id).quorum_reached_historically
     }
 
 
+
+    // Shared proposal shell: fills every field with safe defaults so each
+    // typed constructor below only specifies what distinguishes it.
+    // Single source for the Proposal struct literal.
+    fun new_proposal_base(
+        id: u64,
+        proposer: address,
+        proposer_ve_token: address,
+        title: String,
+        description_hash: vector<u8>,
+        start_time: u64,
+        end_time: u64,
+        quorum_required: u64,
+        proposal_type: u8,
+        upgrade_metadata: vector<u8>,
+        upgrade_code: vector<vector<u8>>,
+        action_recipient: address,
+        action_amount: u64,
+        action_config_key: u8,
+        action_config_value: u64,
+        action_target_address: address,
+    ): Proposal {
+        Proposal {
+            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time, eta: 0,
+            executed: false, canceled: false, quorum_reached_historically: false,
+            for_votes: 0, against_votes: 0, abstain_votes: 0,
+            upgrade_metadata, upgrade_code, quorum_required,
+            proposal_type,
+            action_recipient,
+            action_amount,
+            action_config_key,
+            action_config_value,
+            action_target_address,
+        }
+    }
 
     // Manual proposal constructor for Claim Capability action
     public(friend) fun new_claim_capability_proposal(
@@ -333,21 +360,13 @@ module dao_factory::ledger {
         quorum_required: u64,
         target_address: address,
     ): Proposal {
-        Proposal {
-            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time, eta: 0,
-            executed: false, canceled: false, quorum_reached_historically: false,
-            for_votes: 0, against_votes: 0, abstain_votes: 0,
-            upgrade_metadata: vector::empty(), upgrade_code: vector::empty(), quorum_required,
-            proposal_type: 6, // Claim Capability Type
-            action_recipient: @0x0,
-            action_amount: 0,
-            action_config_key: 0,
-            action_config_value: 0,
-            action_target_address: target_address,
-        }
+        new_proposal_base(
+            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time,
+            quorum_required, 6, vector::empty(), vector::empty(), @0x0, 0, 0, 0, target_address
+        )
     }
 
-    // Manual proposal constructor for the herald module
+    // Manual proposal constructor for the herald module (Code Upgrade, type 0)
     public(friend) fun new_proposal(
         id: u64,
         proposer: address,
@@ -361,18 +380,10 @@ module dao_factory::ledger {
         quorum_required: u64,
         target_address: address
     ): Proposal {
-        Proposal {
-            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time, eta: 0,
-            executed: false, canceled: false, quorum_reached_historically: false,
-            for_votes: 0, against_votes: 0, abstain_votes: 0,
-            upgrade_metadata, upgrade_code, quorum_required,
-            proposal_type: 0,
-            action_recipient: @0x0,
-            action_amount: 0,
-            action_config_key: 0,
-            action_config_value: 0,
-            action_target_address: target_address,
-        }
+        new_proposal_base(
+            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time,
+            quorum_required, 0, upgrade_metadata, upgrade_code, @0x0, 0, 0, 0, target_address
+        )
     }
 
     // Manual proposal constructor for Treasury action
@@ -389,18 +400,10 @@ module dao_factory::ledger {
         recipient: address,
         amount: u64
     ): Proposal {
-        Proposal {
-            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time, eta: 0,
-            executed: false, canceled: false, quorum_reached_historically: false,
-            for_votes: 0, against_votes: 0, abstain_votes: 0,
-            upgrade_metadata: vector::empty(), upgrade_code: vector::empty(), quorum_required,
-            proposal_type: 1,
-            action_recipient: recipient,
-            action_amount: amount,
-            action_config_key: 0,
-            action_config_value: 0,
-            action_target_address: asset_address,
-        }
+        new_proposal_base(
+            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time,
+            quorum_required, 1, vector::empty(), vector::empty(), recipient, amount, 0, 0, asset_address
+        )
     }
 
     // Manual proposal constructor for NFT Transfer action
@@ -416,18 +419,10 @@ module dao_factory::ledger {
         nft_address: address,
         recipient: address
     ): Proposal {
-        Proposal {
-            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time, eta: 0,
-            executed: false, canceled: false, quorum_reached_historically: false,
-            for_votes: 0, against_votes: 0, abstain_votes: 0,
-            upgrade_metadata: vector::empty(), upgrade_code: vector::empty(), quorum_required,
-            proposal_type: 5,
-            action_recipient: recipient,
-            action_amount: 1,
-            action_config_key: 0,
-            action_config_value: 0,
-            action_target_address: nft_address,
-        }
+        new_proposal_base(
+            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time,
+            quorum_required, 5, vector::empty(), vector::empty(), recipient, 1, 0, 0, nft_address
+        )
     }
 
     // Manual proposal constructor for Config action
@@ -443,21 +438,14 @@ module dao_factory::ledger {
         config_key: u8,
         config_value: u64
     ): Proposal {
-        Proposal {
-            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time, eta: 0,
-            executed: false, canceled: false, quorum_reached_historically: false,
-            for_votes: 0, against_votes: 0, abstain_votes: 0,
-            upgrade_metadata: vector::empty(), upgrade_code: vector::empty(), quorum_required,
-            proposal_type: 2,
-            action_recipient: @0x0,
-            action_amount: 0,
-            action_config_key: config_key,
-            action_config_value: config_value,
-            action_target_address: @0x0,
-        }
+        new_proposal_base(
+            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time,
+            quorum_required, 2, vector::empty(), vector::empty(), @0x0, 0, config_key, config_value, @0x0
+        )
     }
 
     // Manual proposal constructor for Module Settings
+    // Note: the string payload is stored in the upgrade_metadata field.
     public(friend) fun new_module_setting_proposal(
         id: u64,
         proposer: address,
@@ -472,18 +460,10 @@ module dao_factory::ledger {
         string_value: vector<u8>,
         bool_value: u64
     ): Proposal {
-        Proposal {
-            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time, eta: 0,
-            executed: false, canceled: false, quorum_reached_historically: false,
-            for_votes: 0, against_votes: 0, abstain_votes: 0,
-            upgrade_metadata: string_value, upgrade_code: vector::empty(), quorum_required,
-            proposal_type: 7, // Module Settings
-            action_recipient: @0x0,
-            action_amount: 0,
-            action_config_key: setting_type,
-            action_config_value: bool_value,
-            action_target_address: target_address,
-        }
+        new_proposal_base(
+            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time,
+            quorum_required, 7, string_value, vector::empty(), @0x0, 0, setting_type, bool_value, target_address
+        )
     }
 
     // Manual proposal constructor for Guardian Update action
@@ -498,18 +478,10 @@ module dao_factory::ledger {
         quorum_required: u64,
         new_guardian: address
     ): Proposal {
-        Proposal {
-            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time, eta: 0,
-            executed: false, canceled: false, quorum_reached_historically: false,
-            for_votes: 0, against_votes: 0, abstain_votes: 0,
-            upgrade_metadata: vector::empty(), upgrade_code: vector::empty(), quorum_required,
-            proposal_type: 4,
-            action_recipient: @0x0,
-            action_amount: 0,
-            action_config_key: 0,
-            action_config_value: 0,
-            action_target_address: new_guardian,
-        }
+        new_proposal_base(
+            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time,
+            quorum_required, 4, vector::empty(), vector::empty(), @0x0, 0, 0, 0, new_guardian
+        )
     }
 
     // Manual proposal constructor for Gauge action
@@ -526,18 +498,35 @@ module dao_factory::ledger {
         target_address: address,
         gauge_id: u64
     ): Proposal {
-        Proposal {
-            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time, eta: 0,
-            executed: false, canceled: false, quorum_reached_historically: false,
-            for_votes: 0, against_votes: 0, abstain_votes: 0,
-            upgrade_metadata: vector::empty(), upgrade_code: vector::empty(), quorum_required,
-            proposal_type: 3,
-            action_recipient: @0x0,
-            action_amount: 0,
-            action_config_key: action_type,
-            action_config_value: gauge_id,
-            action_target_address: target_address,
-        }
+        new_proposal_base(
+            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time,
+            quorum_required, 3, vector::empty(), vector::empty(), @0x0, 0, action_type, gauge_id, target_address
+        )
+    }
+
+    // Manual proposal constructor for NFT Boost Collection action
+    // Reuses the generic action fields exactly like the Gauge action:
+    // action_config_key = action_type (0 = add/update, 1 = remove),
+    // action_target_address = collection_addr, action_config_value = boost_bps.
+    // The extractor view get_proposal_action_gauge() has the same (u8, address, u64)
+    // shape and is reused for execution.
+    public(friend) fun new_boost_proposal(
+        id: u64,
+        proposer: address,
+        proposer_ve_token: address,
+        title: String,
+        description_hash: vector<u8>,
+        start_time: u64,
+        end_time: u64,
+        quorum_required: u64,
+        action_type: u8,
+        collection_addr: address,
+        boost_bps: u64
+    ): Proposal {
+        new_proposal_base(
+            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time,
+            quorum_required, 8, vector::empty(), vector::empty(), @0x0, 0, action_type, boost_bps, collection_addr
+        )
     }
 
     // Generates a temporary signer using the master key (Only for friend modules)
@@ -556,10 +545,8 @@ module dao_factory::ledger {
     // 0: Pending, 1: Active, 2: Canceled, 3: Defeated, 4: Succeeded, 5: Queued, 6: Executed
     #[view]
     public fun get_proposal_state(dao_address: address, proposal_id: u64): u8 acquires DaoState {
-        let dao_state = borrow_global<DaoState>(dao_address);
-        assert!(smart_table::contains(&dao_state.proposals, proposal_id), error::not_found(E_PROPOSAL_NOT_FOUND));
-        
-        let proposal = smart_table::borrow(&dao_state.proposals, proposal_id);
+        let state = borrow_global<DaoState>(dao_address);
+        let proposal = get_proposal_safe(state, proposal_id);
         let current_time = timestamp::now_seconds();
         
         if (proposal.canceled) { return 2u8 }; // Canceled
@@ -582,9 +569,8 @@ module dao_factory::ledger {
     // Returns the public details of the proposal
     #[view]
     public fun get_proposal_details(dao_address: address, proposal_id: u64): (address, u64, u64, u64, bool, bool, u64, u64, u64) acquires DaoState {
-        let dao_state = borrow_global<DaoState>(dao_address);
-        assert!(smart_table::contains(&dao_state.proposals, proposal_id), error::not_found(E_PROPOSAL_NOT_FOUND));
-        let proposal = smart_table::borrow(&dao_state.proposals, proposal_id);
+        let state = borrow_global<DaoState>(dao_address);
+        let proposal = get_proposal_safe(state, proposal_id);
         (
             proposal.proposer,
             proposal.start_time,
@@ -601,55 +587,48 @@ module dao_factory::ledger {
     // Returns the NFT address used to create the proposal
     #[view]
     public fun get_proposal_ve_token(dao_address: address, proposal_id: u64): address acquires DaoState {
-        let dao_state = borrow_global<DaoState>(dao_address);
-        assert!(smart_table::contains(&dao_state.proposals, proposal_id), error::not_found(E_PROPOSAL_NOT_FOUND));
-        smart_table::borrow(&dao_state.proposals, proposal_id).proposer_ve_token
+        let state = borrow_global<DaoState>(dao_address);
+        get_proposal_safe(state, proposal_id).proposer_ve_token
     }
 
     // Returns the snapshot quorum required for a proposal
     #[view]
     public fun get_proposal_quorum(dao_address: address, proposal_id: u64): u64 acquires DaoState {
-        let dao_state = borrow_global<DaoState>(dao_address);
-        assert!(smart_table::contains(&dao_state.proposals, proposal_id), error::not_found(E_PROPOSAL_NOT_FOUND));
-        smart_table::borrow(&dao_state.proposals, proposal_id).quorum_required
+        let state = borrow_global<DaoState>(dao_address);
+        get_proposal_safe(state, proposal_id).quorum_required
     }
 
     #[view]
     public fun get_proposal_type(dao_address: address, proposal_id: u64): u8 acquires DaoState {
-        let dao_state = borrow_global<DaoState>(dao_address);
-        assert!(smart_table::contains(&dao_state.proposals, proposal_id), error::not_found(E_PROPOSAL_NOT_FOUND));
-        smart_table::borrow(&dao_state.proposals, proposal_id).proposal_type
+        let state = borrow_global<DaoState>(dao_address);
+        get_proposal_safe(state, proposal_id).proposal_type
     }
-
+    
     #[view]
     public fun get_proposal_action_treasury(dao_address: address, proposal_id: u64): (address, u64) acquires DaoState {
-        let dao_state = borrow_global<DaoState>(dao_address);
-        assert!(smart_table::contains(&dao_state.proposals, proposal_id), error::not_found(E_PROPOSAL_NOT_FOUND));
-        let proposal = smart_table::borrow(&dao_state.proposals, proposal_id);
+        let state = borrow_global<DaoState>(dao_address);
+        let proposal = get_proposal_safe(state, proposal_id);
         (proposal.action_recipient, proposal.action_amount)
     }
-
+    
     #[view]
     public fun get_proposal_action_config(dao_address: address, proposal_id: u64): (u8, u64) acquires DaoState {
-        let dao_state = borrow_global<DaoState>(dao_address);
-        assert!(smart_table::contains(&dao_state.proposals, proposal_id), error::not_found(E_PROPOSAL_NOT_FOUND));
-        let proposal = smart_table::borrow(&dao_state.proposals, proposal_id);
+        let state = borrow_global<DaoState>(dao_address);
+        let proposal = get_proposal_safe(state, proposal_id);
         (proposal.action_config_key, proposal.action_config_value)
     }
 
     #[view]
     public fun get_proposal_action_gauge(dao_address: address, proposal_id: u64): (u8, address, u64) acquires DaoState {
-        let dao_state = borrow_global<DaoState>(dao_address);
-        assert!(smart_table::contains(&dao_state.proposals, proposal_id), error::not_found(E_PROPOSAL_NOT_FOUND));
-        let proposal = smart_table::borrow(&dao_state.proposals, proposal_id);
+        let state = borrow_global<DaoState>(dao_address);
+        let proposal = get_proposal_safe(state, proposal_id);
         (proposal.action_config_key, proposal.action_target_address, proposal.action_config_value)
     }
 
     #[view]
     public fun get_proposal_action_module_setting(dao_address: address, proposal_id: u64): (u8, address, vector<u8>, u64) acquires DaoState {
-        let dao_state = borrow_global<DaoState>(dao_address);
-        assert!(smart_table::contains(&dao_state.proposals, proposal_id), error::not_found(E_PROPOSAL_NOT_FOUND));
-        let proposal = smart_table::borrow(&dao_state.proposals, proposal_id);
+        let state = borrow_global<DaoState>(dao_address);
+        let proposal = get_proposal_safe(state, proposal_id);
         (proposal.action_config_key, proposal.action_target_address, proposal.upgrade_metadata, proposal.action_config_value)
     }
 
@@ -712,5 +691,17 @@ module dao_factory::ledger {
         };
 
         (clamped_quorum as u64)
+    }
+
+    // --- Helpers for Deduplication ---
+
+    fun get_proposal_safe(state: &DaoState, proposal_id: u64): &Proposal {
+        assert!(smart_table::contains(&state.proposals, proposal_id), error::not_found(E_PROPOSAL_NOT_FOUND));
+        smart_table::borrow(&state.proposals, proposal_id)
+    }
+
+    fun get_proposal_mut_safe(state: &mut DaoState, proposal_id: u64): &mut Proposal {
+        assert!(smart_table::contains(&state.proposals, proposal_id), error::not_found(E_PROPOSAL_NOT_FOUND));
+        smart_table::borrow_mut(&mut state.proposals, proposal_id)
     }
 }

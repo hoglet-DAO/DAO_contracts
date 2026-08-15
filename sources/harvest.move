@@ -84,9 +84,15 @@ module dao_factory::harvest {
         if (total_locked > 0 && amount > 0) {
             let increment = (((amount as u256) * PRECISION / (total_locked as u256)) as u128);
             vault.acc_reward_per_share = vault.acc_reward_per_share + increment;
+            fungible_asset::deposit(vault.store, reward);
+        } else {
+            // SECURITY FIX (VULN-06): mirror of legacy::inject_rebase. When no
+            // one is locking, rewards deposited into the vault would be
+            // stranded forever (the accumulator can never distribute them).
+            // Redirect them to the DAO treasury instead, where governance
+            // can recover them.
+            primary_fungible_store::deposit(dao_address, reward);
         };
-
-        fungible_asset::deposit(vault.store, reward);
 
         event::emit(RewardsInjected {
             dao_address,

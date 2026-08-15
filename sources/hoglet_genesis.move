@@ -37,17 +37,17 @@ module dao_factory::hoglet_genesis {
         primary_fungible_store::deposit(signer::address_of(admin), coins);
 
         // 3. Temporarily inject Formula 137 into the Factory config
-        petra::set_default_initial_emission_ppm(admin, 2734); // 2734 PPM = 0.2734% = 37.45 Trillions
-        petra::set_default_decay_bps(admin, 100); // 1% weekly decay
-        petra::set_default_tail_emission_ppm(admin, 10); // 10 PPM = 0.001% = 137 Billions perpetual
+        petra::set_default_config(admin, 12, 2734); // 2734 PPM = 0.2734% = 37.45 Trillions
+        petra::set_default_config(admin, 9, 100); // 1% weekly decay
+        petra::set_default_config(admin, 10, 10); // 10 PPM = 0.001% = 137 Billions perpetual
 
         // 4. Create the Inflationary DAO via Factory
         let dao_address = petra::create_dao_inflationary(admin, metadata_object, mint_ref);
 
         // 5. Revert the Factory to the 137-themed defaults for everyone else
-        petra::set_default_initial_emission_ppm(admin, 13700); // 1.37%
-        petra::set_default_decay_bps(admin, 137); // 1.37% decay
-        petra::set_default_tail_emission_ppm(admin, 137); // 0.0137%
+        petra::set_default_config(admin, 12, 13700); // 1.37%
+        petra::set_default_config(admin, 9, 137); // 1.37% decay
+        petra::set_default_config(admin, 10, 137); // 0.0137%
 
         // 6. Complete Ouroboros: Transfer Factory admin rights to the Hoglet DAO
         //petra::transfer_admin(admin, dao_address);

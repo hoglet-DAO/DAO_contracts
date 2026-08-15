@@ -9,6 +9,7 @@ module dao_factory::restore {
     friend dao_factory::petra;
     friend dao_factory::anchor;
     use std::signer;
+    use std::vector;
     use supra_framework::fungible_asset::{Self, Metadata};
     use supra_framework::primary_fungible_store;
     use supra_framework::object::{Self, Object, ExtendRef};
@@ -19,6 +20,7 @@ module dao_factory::restore {
     use dao_factory::pilgrim;
     use dao_factory::zeal;
     use dao_factory::legacy;
+    use dao_factory::sentinel;
 
     // Errors 
     const E_NOT_WHITELISTED: u64 = 1;
@@ -28,6 +30,8 @@ module dao_factory::restore {
     const E_INVALID_EPOCH: u64   = 5;
     const E_INVALID_GAUGE: u64   = 6;
     const E_NOT_OBJECT: u64      = 7;
+    const E_NOT_AUTHORIZED: u64  = 8;
+    const E_PAUSED: u64          = 9;
 
     // Structs 
     struct BribeKey has copy, drop, store {
@@ -55,7 +59,7 @@ module dao_factory::restore {
         claims: SmartTable<ClaimKey, bool>,
         
         // Tokens allowed to be used as bribe (anti-spam)
-        whitelisted_tokens: SmartTable<address, bool>,
+        whitelisted_tokens: vector<address>,
     }
 
     // Events 
@@ -88,13 +92,35 @@ module dao_factory::restore {
         is_allowed: bool,
     }
 
+    #[event]
+    struct BribeRolledOver has drop, store {
+        dao_address: address,
+        from_pilgrim: u64,
+        to_pilgrim: u64,
+        gauge_id: u64,
+        token: address,
+        amount: u64,
+    }
+
     // Initialization 
 
-    public(friend) fun initialize(dao_signer: &signer) {
+    public(friend) fun initialize(dao_signer: &signer, governance_token_addr: address, extra_whitelisted_tokens: vector<address>) {
         let constructor_ref = object::create_object(signer::address_of(dao_signer));
         
-        let whitelisted = smart_table::new();
-        smart_table::add(&mut whitelisted, @0xa, true);
+        let whitelisted = vector::empty<address>();
+        if (!vector::contains(&whitelisted, &governance_token_addr)) {
+            vector::push_back(&mut whitelisted, governance_token_addr);
+        };
+        
+        let i = 0;
+        let len = vector::length(&extra_whitelisted_tokens);
+        while (i < len) {
+            let token = *vector::borrow(&extra_whitelisted_tokens, i);
+            if (!vector::contains(&whitelisted, &token)) {
+                vector::push_back(&mut whitelisted, token);
+            };
+            i = i + 1;
+        };
 
         move_to(dao_signer, BribeRegistry {
             vault_extend_ref: object::generate_extend_ref(&constructor_ref),
@@ -116,7 +142,17 @@ module dao_factory::restore {
     ) acquires BribeRegistry {
         let registry = borrow_global_mut<BribeRegistry>(signer::address_of(dao_signer));
         let token_addr = object::object_address(&token_metadata);
-        smart_table::upsert(&mut registry.whitelisted_tokens, token_addr, is_allowed);
+        
+        let contains = vector::contains(&registry.whitelisted_tokens, &token_addr);
+        if (is_allowed && !contains) {
+            vector::push_back(&mut registry.whitelisted_tokens, token_addr);
+        } else if (!is_allowed && contains) {
+            let (found, index) = vector::index_of(&registry.whitelisted_tokens, &token_addr);
+            if (found) {
+                vector::remove(&mut registry.whitelisted_tokens, index);
+            };
+        };
+
         event::emit(WhitelistUpdated {
             dao_address: signer::address_of(dao_signer),
             token: token_addr,
@@ -146,13 +182,57 @@ module dao_factory::restore {
         assert!(gauge_id < zeal::get_gauge_count(dao_address), error::invalid_argument(E_INVALID_GAUGE));
         
         assert!(
-            smart_table::contains(&registry.whitelisted_tokens, token_addr) && 
-            *smart_table::borrow(&registry.whitelisted_tokens, token_addr),
+            vector::contains(&registry.whitelisted_tokens, &token_addr),
             error::invalid_argument(E_NOT_WHITELISTED)
         );
 
         // Withdraw from the depositor and save in the central bribes vault
         let fa = primary_fungible_store::withdraw(depositor, token_metadata, amount);
+        primary_fungible_store::deposit(registry.vault_address, fa);
+
+        let key = BribeKey { pilgrim, gauge_id, token_addr };
+        let current_total = if (smart_table::contains(&registry.total_bribes, key)) {
+            *smart_table::borrow(&registry.total_bribes, key)
+        } else { 0 };
+        
+        smart_table::upsert(&mut registry.total_bribes, key, current_total + amount);
+
+        event::emit(BribeDeposited {
+            dao_address, depositor: depositor_addr, pilgrim, gauge_id, token: token_addr, amount
+        });
+    }
+
+    // Deposits tokens (legacy Coin format) to incentivize votes towards a gauge in a future epoch.
+    // This wrapper handles the conversion from Coin to FungibleAsset transparently.
+    public entry fun deposit_bribe_coin<CoinType>(
+        depositor: &signer,
+        dao_address: address,
+        pilgrim: u64,
+        gauge_id: u64,
+        amount: u64,
+    ) acquires BribeRegistry {
+        let depositor_addr = signer::address_of(depositor);
+        let registry = borrow_global_mut<BribeRegistry>(dao_address);
+        
+        assert!(pilgrim > pilgrim::now(), error::invalid_argument(E_INVALID_EPOCH));
+        assert!(gauge_id < zeal::get_gauge_count(dao_address), error::invalid_argument(E_INVALID_GAUGE));
+        
+        // 1. Withdraw the legacy Coin
+        let coin = supra_framework::coin::withdraw<CoinType>(depositor, amount);
+        
+        // 2. Convert Coin to Fungible Asset
+        let fa = supra_framework::coin::coin_to_fungible_asset(coin);
+        
+        // 3. Get the Metadata Address of the resulting FA
+        let token_metadata = supra_framework::fungible_asset::asset_metadata(&fa);
+        let token_addr = object::object_address(&token_metadata);
+
+        assert!(
+            vector::contains(&registry.whitelisted_tokens, &token_addr),
+            error::invalid_argument(E_NOT_WHITELISTED)
+        );
+
+        // Deposit into vault
         primary_fungible_store::deposit(registry.vault_address, fa);
 
         let key = BribeKey { pilgrim, gauge_id, token_addr };
@@ -177,6 +257,7 @@ module dao_factory::restore {
         gauge_id: u64,
         token_metadata_addr: address,
     ) acquires BribeRegistry {
+        assert!(!sentinel::is_paused(dao_address), error::invalid_state(E_PAUSED));
         assert!(supra_framework::object::is_object(legacy_addr), error::invalid_argument(E_NOT_OBJECT));
         assert!(supra_framework::object::is_object(token_metadata_addr), error::invalid_argument(E_NOT_OBJECT));
         let ve_token_obj = supra_framework::object::address_to_object<legacy::VeToken>(legacy_addr);
@@ -230,8 +311,14 @@ module dao_factory::restore {
     public fun is_whitelisted(dao_address: address, token_addr: address): bool acquires BribeRegistry {
         if (!exists<BribeRegistry>(dao_address)) return false;
         let registry = borrow_global<BribeRegistry>(dao_address);
-        if (!smart_table::contains(&registry.whitelisted_tokens, token_addr)) return false;
-        *smart_table::borrow(&registry.whitelisted_tokens, token_addr)
+        vector::contains(&registry.whitelisted_tokens, &token_addr)
+    }
+
+    #[view]
+    public fun get_whitelisted_tokens(dao_address: address): vector<address> acquires BribeRegistry {
+        if (!exists<BribeRegistry>(dao_address)) return vector::empty<address>();
+        let registry = borrow_global<BribeRegistry>(dao_address);
+        registry.whitelisted_tokens
     }
 
     #[view]
@@ -261,5 +348,53 @@ module dao_factory::restore {
         let key = ClaimKey { pilgrim, gauge_id, token_addr, ve_token_addr };
         if (!smart_table::contains(&registry.claims, key)) return false;
         *smart_table::borrow(&registry.claims, key)
+    }
+
+    /// Rolls over unclaimed bribes to the next available voting epoch if a gauge received 0 votes.
+    public entry fun rollover_bribe(
+        _caller: &signer,
+        dao_address: address,
+        past_pilgrim: u64,
+        gauge_id: u64,
+        token_metadata_addr: address,
+    ) acquires BribeRegistry {
+        assert!(past_pilgrim < pilgrim::now(), error::invalid_state(E_INVALID_EPOCH));
+        assert!(supra_framework::object::is_object(token_metadata_addr), error::invalid_argument(E_NOT_OBJECT));
+        
+        // Verify that the gauge received exactly 0 votes in that epoch
+        let total_power = zeal::get_gauge_total_votes(dao_address, past_pilgrim, gauge_id);
+        assert!(total_power == 0, error::invalid_state(E_NOT_AUTHORIZED)); // Only rollover if 0 votes
+
+        let token_metadata = supra_framework::object::address_to_object<Metadata>(token_metadata_addr);
+        let token_addr = object::object_address(&token_metadata);
+        
+        let past_key = BribeKey { pilgrim: past_pilgrim, gauge_id, token_addr };
+        let registry = borrow_global_mut<BribeRegistry>(dao_address);
+        
+        if (!smart_table::contains(&registry.total_bribes, past_key)) return;
+        let amount = *smart_table::borrow(&registry.total_bribes, past_key);
+        if (amount == 0) return;
+
+        // Zero out the past epoch
+        smart_table::upsert(&mut registry.total_bribes, past_key, 0);
+
+        // Move to the next available voting epoch (now + 1)
+        let target_pilgrim = pilgrim::now() + 1;
+        let target_key = BribeKey { pilgrim: target_pilgrim, gauge_id, token_addr };
+        
+        let current_target_total = if (smart_table::contains(&registry.total_bribes, target_key)) {
+            *smart_table::borrow(&registry.total_bribes, target_key)
+        } else { 0 };
+
+        smart_table::upsert(&mut registry.total_bribes, target_key, current_target_total + amount);
+
+        event::emit(BribeRolledOver {
+            dao_address,
+            from_pilgrim: past_pilgrim,
+            to_pilgrim: target_pilgrim,
+            gauge_id,
+            token: token_addr,
+            amount
+        });
     }
 }

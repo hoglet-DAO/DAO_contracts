@@ -36,6 +36,7 @@ module dao_factory::witness {
     const E_LOCK_EXPIRED: u64       = 6;
     const E_NOT_OBJECT: u64         = 7;
     const E_DAO_NOT_ACTIVE: u64     = 8;
+    const E_PROPOSAL_CANCELED: u64  = 9;
 
     // Structs 
 
@@ -125,9 +126,10 @@ module dao_factory::witness {
         // The veToken cannot be expired.
         assert!(!legacy::is_expired(ve_token_obj), error::invalid_state(E_LOCK_EXPIRED));
 
-        // Verify that the proposal is active.
-        let (_, start_time, end_time, _, _, _, _, _, _) = ledger::get_proposal_details(dao_address, proposal_id);
+        // Verify that the proposal is active and not canceled.
+        let (_, start_time, end_time, _, _, canceled, _, _, _) = ledger::get_proposal_details(dao_address, proposal_id);
         let current_time = timestamp::now_seconds();
+        assert!(!canceled, error::invalid_state(E_PROPOSAL_CANCELED));
         assert!(
             current_time >= start_time && 
             current_time <= end_time,
@@ -150,9 +152,7 @@ module dao_factory::witness {
         assert!(weight > 0, error::invalid_state(E_ZERO_POWER));
 
         // Register vote in ledger using safe setters.
-        if (support == 0)      { ledger::add_against_votes(dao_address, proposal_id, weight); }
-        else if (support == 1) { ledger::add_for_votes(dao_address, proposal_id, weight); }
-        else                   { ledger::add_abstain_votes(dao_address, proposal_id, weight); };
+        ledger::add_votes(dao_address, proposal_id, support, weight);
 
         // Late Quorum Extension (GovernorPreventLateQuorum) 
         // If quorum is reached near the end of the voting period,
@@ -184,6 +184,9 @@ module dao_factory::witness {
             };
         };
 
+        // Record the epoch in which this veToken voted to prevent double-voting via merge
+        legacy::set_last_voted_epoch(ve_token_obj, pilgrim::now());
+
         // Read updated totals for the event
         let (_, _, _, _, _, _, total_for, total_against, total_abstain) = ledger::get_proposal_details(dao_address, proposal_id);
 
@@ -207,6 +210,7 @@ module dao_factory::witness {
         proposal_id: u64,
         ve_token_addr: address,
     ): bool acquires VoteRegistry {
+        if (!exists<VoteRegistry>(dao_address)) return false;
         let registry = borrow_global<VoteRegistry>(dao_address);
         if (!smart_table::contains(&registry.votes, proposal_id)) return false;
         let prop_votes = smart_table::borrow(&registry.votes, proposal_id);

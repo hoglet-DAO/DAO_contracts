@@ -11,6 +11,7 @@ module dao_factory::legacy {
     friend dao_factory::petra;
     friend dao_factory::jubilee;
     friend dao_factory::anchor;
+    friend dao_factory::zeal;
     use std::signer;
     use std::string::{Self, String};
     use std::option::{Self, Option};
@@ -45,6 +46,7 @@ module dao_factory::legacy {
     const E_SELF_DELEGATE: u64      = 8;
     const E_ALREADY_DELEGATED: u64  = 9;
     const E_INVALID_OBJECT: u64     = 10;
+    const E_VOTED_RECENTLY: u64     = 11;
 
     const MIN_LOCK_EPOCHS: u64 = 3;    
     const MAX_LOCK_EPOCHS: u64 = 207;  
@@ -69,10 +71,19 @@ module dao_factory::legacy {
         base_uri: String,
     }
 
-    struct Snapshot has store, drop {
+    struct Snapshot has store, copy, drop {
         pilgrim: u64,
         locked_amount: u64,
         end_epoch: u64,
+    }
+
+    struct RegistrySnapshot has store, copy, drop {
+        pilgrim: u64, // Epoch number
+        total_locked: u64,
+    }
+
+    struct TotalLockedHistory has key {
+        snapshots: SmartVector<RegistrySnapshot>,
     }
 
     struct VeToken has key {
@@ -86,6 +97,7 @@ module dao_factory::legacy {
         // The owner can revoke at any time.
         delegate: Option<address>,
         delegator: address,
+        last_voted_epoch: u64,
     }
 
     struct VeTokenRefs has key {
@@ -197,22 +209,32 @@ module dao_factory::legacy {
             token_symbol,
             base_uri: string::utf8(b""), // Immortal SVG by default
         });
+
+        move_to(dao_signer, TotalLockedHistory {
+            snapshots: smart_vector::new<RegistrySnapshot>(),
+        });
     }
 
     // Rebase 
 
     public(friend) fun inject_rebase(
-        dao_address: address, 
+        dao_address: address,
         rebase_fa: FungibleAsset
     ) acquires VeTokenRegistry {
         let registry = borrow_global_mut<VeTokenRegistry>(dao_address);
         let amount = fungible_asset::amount(&rebase_fa);
-        
+
         if (registry.total_locked > 0 && amount > 0) {
-            registry.acc_rebase_per_share = registry.acc_rebase_per_share 
+            registry.acc_rebase_per_share = registry.acc_rebase_per_share
                 + (((amount as u256) * PRECISION / (registry.total_locked as u256)) as u128);
+            fungible_asset::deposit(registry.rebase_store, rebase_fa);
+        } else {
+            // SECURITY FIX (VULN-06): When no one is locking, rebase tokens
+            // deposited into rebase_store would be stranded forever (the
+            // accumulator can never distribute them). Redirect them to the
+            // DAO treasury instead, where governance can recover them.
+            primary_fungible_store::deposit(dao_address, rebase_fa);
         };
-        fungible_asset::deposit(registry.rebase_store, rebase_fa);
     }
 
     public(friend) fun inject_rewards(
@@ -221,6 +243,66 @@ module dao_factory::legacy {
     ) acquires VeTokenRegistry {
         let registry = borrow_global<VeTokenRegistry>(dao_address);
         harvest::inject_rewards(dao_address, reward, registry.total_locked);
+    }
+
+    // Snapshot Helpers 
+
+    // Upserts the voting-power snapshot for the current epoch: updates the
+    // last snapshot if it belongs to this epoch, otherwise appends a new one.
+    // Shared by every balance/end_epoch-mutating flow (compound, extend,
+    // increase, merge).
+    fun upsert_snapshot(ve_data: &mut VeToken) {
+        let current_epoch = pilgrim::now();
+        let len = smart_vector::length(&ve_data.snapshots);
+        if (len > 0 && smart_vector::borrow(&ve_data.snapshots, len - 1).pilgrim == current_epoch) {
+            let snap = smart_vector::borrow_mut(&mut ve_data.snapshots, len - 1);
+            snap.locked_amount = ve_data.locked_amount;
+            snap.end_epoch = ve_data.end_epoch;
+        } else {
+            smart_vector::push_back(&mut ve_data.snapshots, Snapshot {
+                pilgrim: current_epoch,
+                locked_amount: ve_data.locked_amount,
+                end_epoch: ve_data.end_epoch,
+            });
+        };
+    }
+
+    // Drains and destroys a snapshots vector (used when a VeToken is burned).
+    fun destroy_snapshots(snapshots: SmartVector<Snapshot>) {
+        let len = smart_vector::length(&snapshots);
+        let i = 0;
+        while (i < len) {
+            smart_vector::pop_back(&mut snapshots);
+            i = i + 1;
+        };
+        smart_vector::destroy_empty(snapshots);
+    }
+
+    fun update_total_locked_history(dao_address: address, current_total: u64) acquires TotalLockedHistory {
+        let history = borrow_global_mut<TotalLockedHistory>(dao_address);
+        let current_epoch = pilgrim::now();
+        let len = smart_vector::length(&history.snapshots);
+        if (len > 0) {
+            let last_snap = smart_vector::borrow_mut(&mut history.snapshots, len - 1);
+            if (last_snap.pilgrim == current_epoch) {
+                last_snap.total_locked = current_total;
+                return
+            }
+        };
+        smart_vector::push_back(&mut history.snapshots, RegistrySnapshot {
+            pilgrim: current_epoch,
+            total_locked: current_total,
+        });
+    }
+
+    // Deposits SupraCoin or FungibleAsset in the DAO rewards vault (auto-compounding).
+    // Can only be called by harvest.
+    public(friend) fun inject_bribes(dao_address: address, amount: u64) acquires VeTokenRegistry {
+        let registry = borrow_global_mut<VeTokenRegistry>(dao_address);
+        if (registry.total_locked > 0 && amount > 0) {
+            registry.acc_rebase_per_share = registry.acc_rebase_per_share 
+                + (((amount as u256) * PRECISION / (registry.total_locked as u256)) as u128);
+        };
     }
 
     fun compound_rebase_internal(
@@ -257,20 +339,8 @@ module dao_factory::legacy {
 
             ve_data.locked_amount = ve_data.locked_amount + pending;
             registry.total_locked = registry.total_locked + pending;
-            
-            let current_epoch = pilgrim::now();
-            let len = smart_vector::length(&ve_data.snapshots);
-            if (len > 0 && smart_vector::borrow(&ve_data.snapshots, len - 1).pilgrim == current_epoch) {
-                let snap = smart_vector::borrow_mut(&mut ve_data.snapshots, len - 1);
-                snap.locked_amount = ve_data.locked_amount;
-                snap.end_epoch = ve_data.end_epoch;
-            } else {
-                smart_vector::push_back(&mut ve_data.snapshots, Snapshot {
-                    pilgrim: current_epoch,
-                    locked_amount: ve_data.locked_amount,
-                    end_epoch: ve_data.end_epoch,
-                });
-            };
+
+            upsert_snapshot(ve_data);
 
             event::emit(RebaseCompounded { legacy: obj_addr, amount: pending });
         };
@@ -281,71 +351,7 @@ module dao_factory::legacy {
         harvest::checkpoint(ve_data.dao_address, obj_addr, ve_data.locked_amount);
     }
 
-    // SVG Generator (100% On-Chain Cyberpunk V5) 
-
-    fun format_compact(raw_amount: u64, decimals: u8): String {
-        let divisor = 1;
-        let i = 0;
-        while (i < decimals) {
-            divisor = divisor * 10;
-            i = i + 1;
-        };
-        let amt = raw_amount / divisor;
-        if (amt >= 1_000_000_000_000) {
-            let whole = amt / 1_000_000_000_000;
-            let frac = (amt % 1_000_000_000_000) / 100_000_000_000;
-            let str = string_utils::to_string(&whole);
-            string::append(&mut str, string::utf8(b"."));
-            string::append(&mut str, string_utils::to_string(&frac));
-            string::append(&mut str, string::utf8(b"T"));
-            str
-        } else if (amt >= 1_000_000_000) {
-            let whole = amt / 1_000_000_000;
-            let frac = (amt % 1_000_000_000) / 100_000_000;
-            let str = string_utils::to_string(&whole);
-            string::append(&mut str, string::utf8(b"."));
-            string::append(&mut str, string_utils::to_string(&frac));
-            string::append(&mut str, string::utf8(b"B"));
-            str
-        } else if (amt >= 1_000_000) {
-            let whole = amt / 1_000_000;
-            let frac = (amt % 1_000_000) / 100_000;
-            let str = string_utils::to_string(&whole);
-            string::append(&mut str, string::utf8(b"."));
-            string::append(&mut str, string_utils::to_string(&frac));
-            string::append(&mut str, string::utf8(b"M"));
-            str
-        } else if (amt >= 1_000) {
-            let whole = amt / 1_000;
-            let frac = (amt % 1_000) / 100;
-            let str = string_utils::to_string(&whole);
-            string::append(&mut str, string::utf8(b"."));
-            string::append(&mut str, string_utils::to_string(&frac));
-            string::append(&mut str, string::utf8(b"K"));
-            str
-        } else {
-            let str = string_utils::to_string(&amt);
-            string::append(&mut str, string::utf8(b".00"));
-            str
-        }
-    }
-
-    fun format_boost(epochs: u64): String {
-        let boost_percent = (epochs * 100) / MAX_LOCK_EPOCHS;
-        if (boost_percent >= 100) {
-            string::utf8(b"1.00x")
-        } else {
-            let str = string::utf8(b"0.");
-            if (boost_percent < 10) {
-                string::append(&mut str, string::utf8(b"0"));
-            };
-            string::append(&mut str, string_utils::to_string(&boost_percent));
-            string::append(&mut str, string::utf8(b"x"));
-            str
-        }
-    }
-
-
+    // URI Generator (served by the API endpoint / configurable base_uri) 
 
     fun get_or_generate_uri(_dao_address: address, obj_addr: address, _amount: u64, _epochs: u64, registry: &VeTokenRegistry, _is_delegated: bool): String {
         if (string::is_empty(&registry.base_uri)) {
@@ -379,10 +385,7 @@ module dao_factory::legacy {
     // Public Functions 
 
     public entry fun compound(caller: &signer, legacy_addr: address) acquires VeToken, VeTokenRegistry, VeTokenRefs {
-        assert!(object::is_object(legacy_addr), error::invalid_argument(E_INVALID_OBJECT));
-        let legacy = object::address_to_object<VeToken>(legacy_addr);
-        let owner_addr = object::owner(legacy);
-        assert!(owner_addr == signer::address_of(caller), error::permission_denied(E_NOT_OWNER));
+        let (owner_addr, _) = verify_owner_and_get_legacy(caller, legacy_addr);
         let obj_addr = legacy_addr;
         let ve_data = borrow_global_mut<VeToken>(obj_addr);
         let registry = borrow_global_mut<VeTokenRegistry>(ve_data.dao_address);
@@ -400,7 +403,7 @@ module dao_factory::legacy {
         dao_address: address,
         amount: u64,
         lock_epochs: u64,
-    ) acquires VeTokenRegistry {
+    ) acquires VeTokenRegistry, TotalLockedHistory {
         let _nft_object = create_lock(user, dao_address, amount, lock_epochs);
     }
 
@@ -409,7 +412,7 @@ module dao_factory::legacy {
         dao_address: address,
         amount: u64,
         lock_epochs: u64,
-    ): Object<VeToken> acquires VeTokenRegistry {
+    ): Object<VeToken> acquires VeTokenRegistry, TotalLockedHistory {
         assert!(amount > 0, error::invalid_argument(E_ZERO_AMOUNT));
         assert!(lock_epochs >= MIN_LOCK_EPOCHS, error::invalid_argument(E_LOCK_TOO_SHORT));
         assert!(lock_epochs <= MAX_LOCK_EPOCHS, error::invalid_argument(E_LOCK_TOO_LONG));
@@ -449,6 +452,7 @@ module dao_factory::legacy {
         
         // Ensure adding to total before generating SVG to correctly calculate the Share %
         registry.total_locked = registry.total_locked + amount;
+        update_total_locked_history(dao_address, registry.total_locked);
         
         let dynamic_uri = get_or_generate_uri(dao_address, obj_addr, amount, lock_epochs, registry, false);
         token::set_uri(&mutator_ref, dynamic_uri);
@@ -475,6 +479,7 @@ module dao_factory::legacy {
             token_metadata: registry.token_metadata,
             delegate: option::none(),
             delegator: user_addr,
+            last_voted_epoch: 0,
         });
 
         move_to(&obj_signer, VeTokenRefs {
@@ -507,10 +512,11 @@ module dao_factory::legacy {
         additional_epochs: u64,
     ) acquires VeToken, VeTokenRegistry, VeTokenRefs {
         assert!(additional_epochs >= 1, error::invalid_argument(E_INVALID_EXTEND));
-        let owner_addr = signer::address_of(owner);
-        assert!(object::is_object(legacy_addr), error::invalid_argument(E_INVALID_OBJECT));
-        let legacy = object::address_to_object<VeToken>(legacy_addr);
-        assert!(object::is_owner(legacy, owner_addr), error::permission_denied(E_NOT_OWNER));
+        let (owner_addr, legacy) = verify_owner_and_get_legacy(owner, legacy_addr);
+        
+        // Ensure consistent pausable behavior
+        let dao_address = get_dao_address(legacy);
+        sentinel::assert_not_paused(dao_address);
 
         let obj_addr = legacy_addr;
         
@@ -534,18 +540,7 @@ module dao_factory::legacy {
 
         ve_data.end_epoch = new_end_epoch;
 
-        let len = smart_vector::length(&ve_data.snapshots);
-        if (len > 0 && smart_vector::borrow(&ve_data.snapshots, len - 1).pilgrim == current_epoch) {
-            let snap = smart_vector::borrow_mut(&mut ve_data.snapshots, len - 1);
-            snap.locked_amount = ve_data.locked_amount;
-            snap.end_epoch = new_end_epoch;
-        } else {
-            smart_vector::push_back(&mut ve_data.snapshots, Snapshot {
-                pilgrim: current_epoch,
-                locked_amount: ve_data.locked_amount,
-                end_epoch: new_end_epoch,
-            });
-        };
+        upsert_snapshot(ve_data);
 
         // Update SVG to reflect the new lock time
         let is_delegated = option::is_some(&ve_data.delegate) && *option::borrow(&ve_data.delegate) != owner_addr;
@@ -558,12 +553,13 @@ module dao_factory::legacy {
         owner: &signer,
         legacy_addr: address,
         additional_amount: u64,
-    ) acquires VeToken, VeTokenRegistry, VeTokenRefs {
+    ) acquires VeToken, VeTokenRegistry, VeTokenRefs, TotalLockedHistory {
         assert!(additional_amount > 0, error::invalid_argument(E_ZERO_AMOUNT));
-        let owner_addr = signer::address_of(owner);
-        assert!(object::is_object(legacy_addr), error::invalid_argument(E_INVALID_OBJECT));
-        let legacy = object::address_to_object<VeToken>(legacy_addr);
-        assert!(object::is_owner(legacy, owner_addr), error::permission_denied(E_NOT_OWNER));
+        let (owner_addr, legacy) = verify_owner_and_get_legacy(owner, legacy_addr);
+
+        // Ensure consistent pausable behavior
+        let dao_address = get_dao_address(legacy);
+        sentinel::assert_not_paused(dao_address);
 
         let obj_addr = legacy_addr;
         
@@ -586,24 +582,14 @@ module dao_factory::legacy {
         let new_total = ve_data.locked_amount + additional_amount;
         ve_data.locked_amount = new_total;
         registry.total_locked = registry.total_locked + additional_amount;
+        update_total_locked_history(ve_data.dao_address, registry.total_locked);
 
         ve_data.rebase_debt = (((new_total as u256) * (registry.acc_rebase_per_share as u256) / PRECISION) as u128);
 
         // Checkpoint for rewards (Must be called AFTER updating amount)
         harvest::checkpoint(ve_data.dao_address, obj_addr, new_total);
 
-        let len = smart_vector::length(&ve_data.snapshots);
-        if (len > 0 && smart_vector::borrow(&ve_data.snapshots, len - 1).pilgrim == current_epoch) {
-            let snap = smart_vector::borrow_mut(&mut ve_data.snapshots, len - 1);
-            snap.locked_amount = new_total;
-            snap.end_epoch = ve_data.end_epoch;
-        } else {
-            smart_vector::push_back(&mut ve_data.snapshots, Snapshot {
-                pilgrim: current_epoch,
-                locked_amount: new_total,
-                end_epoch: ve_data.end_epoch,
-            });
-        };
+        upsert_snapshot(ve_data);
 
         // Update SVG to reflect the new amount
         let is_delegated = option::is_some(&ve_data.delegate) && *option::borrow(&ve_data.delegate) != owner_addr;
@@ -615,11 +601,8 @@ module dao_factory::legacy {
     public entry fun withdraw(
         owner: &signer,
         legacy_addr: address,
-    ) acquires VeToken, VeTokenRefs, VeTokenRegistry {
-        let owner_addr = signer::address_of(owner);
-        assert!(object::is_object(legacy_addr), error::invalid_argument(E_INVALID_OBJECT));
-        let legacy = object::address_to_object<VeToken>(legacy_addr);
-        assert!(object::is_owner(legacy, owner_addr), error::permission_denied(E_NOT_OWNER));
+    ) acquires VeToken, VeTokenRefs, VeTokenRegistry, TotalLockedHistory {
+        let (owner_addr, legacy) = verify_owner_and_get_legacy(owner, legacy_addr);
 
         let obj_addr = legacy_addr;
         
@@ -638,21 +621,14 @@ module dao_factory::legacy {
             dao_address = ve_data.dao_address;
         };
 
-        let VeToken { dao_address: _, locked_amount, end_epoch: _, snapshots, rebase_debt: _, token_metadata: _, delegate: _, delegator: _ } =
+        let VeToken { dao_address: _, locked_amount, end_epoch: _, snapshots, rebase_debt: _, token_metadata: _, delegate: _, delegator: _, last_voted_epoch: _ } =
             move_from<VeToken>(obj_addr);
 
         let registry = borrow_global_mut<VeTokenRegistry>(dao_address);
         registry.total_locked = registry.total_locked - locked_amount;
+        update_total_locked_history(dao_address, registry.total_locked);
 
-        smart_vector::destroy_empty({
-            let len = smart_vector::length(&snapshots);
-            let i = 0;
-            while (i < len) {
-                smart_vector::pop_back(&mut snapshots);
-                i = i + 1;
-            };
-            snapshots
-        });
+        destroy_snapshots(snapshots);
 
         let VeTokenRefs { extend_ref, delete_ref, mutator_ref: _ } =
             move_from<VeTokenRefs>(obj_addr);
@@ -663,6 +639,7 @@ module dao_factory::legacy {
         let fa = fungible_asset::withdraw(&obj_signer, store, locked_amount);
         primary_fungible_store::deposit(owner_addr, fa);
 
+        fungible_asset::remove_store(&delete_ref);
         object::delete(delete_ref);
 
         // Checkpoint for rewards (0 because everything was withdrawn)
@@ -675,18 +652,12 @@ module dao_factory::legacy {
         owner: &signer,
         from_legacy_addr: address,
         into_legacy_addr: address,
-    ) acquires VeToken, VeTokenRefs, VeTokenRegistry {
+    ) acquires VeToken, VeTokenRefs, VeTokenRegistry, TotalLockedHistory {
         let owner_addr = signer::address_of(owner);
         assert!(from_legacy_addr != into_legacy_addr, error::invalid_argument(E_INVALID_OBJECT));
         
-        assert!(object::is_object(from_legacy_addr), error::invalid_argument(E_INVALID_OBJECT));
-        assert!(object::is_object(into_legacy_addr), error::invalid_argument(E_INVALID_OBJECT));
-        
-        let from_legacy = object::address_to_object<VeToken>(from_legacy_addr);
-        let into_legacy = object::address_to_object<VeToken>(into_legacy_addr);
-        
-        assert!(object::is_owner(from_legacy, owner_addr), error::permission_denied(E_NOT_OWNER));
-        assert!(object::is_owner(into_legacy, owner_addr), error::permission_denied(E_NOT_OWNER));
+        let (_, from_legacy) = verify_owner_and_get_legacy(owner, from_legacy_addr);
+        let (_, _) = verify_owner_and_get_legacy(owner, into_legacy_addr);
 
         // Get DAO Address and ensure they belong to the same DAO
         let dao_address;
@@ -695,6 +666,11 @@ module dao_factory::legacy {
             let into_ve_data = borrow_global<VeToken>(into_legacy_addr);
             assert!(from_ve_data.dao_address == into_ve_data.dao_address, error::invalid_argument(E_INVALID_OBJECT));
             assert!(from_ve_data.end_epoch > pilgrim::now(), error::invalid_state(E_LOCK_EXPIRED));
+            
+            let current_epoch = pilgrim::now();
+            let check_epoch = if (current_epoch > 0) { current_epoch - 1 } else { 0 };
+            assert!(from_ve_data.last_voted_epoch < check_epoch, error::invalid_state(E_VOTED_RECENTLY));
+            
             dao_address = from_ve_data.dao_address;
         };
 
@@ -721,7 +697,7 @@ module dao_factory::legacy {
         
         // 1. Move out VeToken and VeTokenRefs from `from_legacy`
         {
-            let VeToken { dao_address: _, locked_amount, end_epoch, snapshots, rebase_debt: _, token_metadata: _, delegate, delegator } =
+            let VeToken { dao_address: _, locked_amount, end_epoch, snapshots, rebase_debt: _, token_metadata: _, delegate, delegator, last_voted_epoch: _ } =
                 move_from<VeToken>(from_legacy_addr);
             
             from_amount = locked_amount;
@@ -729,15 +705,7 @@ module dao_factory::legacy {
             old_delegate = delegate;
             old_delegator = delegator;
 
-            smart_vector::destroy_empty({
-                let len = smart_vector::length(&snapshots);
-                let i = 0;
-                while (i < len) {
-                    smart_vector::pop_back(&mut snapshots);
-                    i = i + 1;
-                };
-                snapshots
-            });
+            destroy_snapshots(snapshots);
         };
 
         let VeTokenRefs { extend_ref, delete_ref, mutator_ref: _ } =
@@ -750,6 +718,7 @@ module dao_factory::legacy {
         let fa = fungible_asset::withdraw(&from_obj_signer, from_store, from_amount);
 
         // Delete the old token object
+        fungible_asset::remove_store(&delete_ref);
         object::delete(delete_ref);
 
         if (option::is_some(&old_delegate)) {
@@ -790,22 +759,13 @@ module dao_factory::legacy {
             };
 
             // Update rebase debt to prevent rebase drain exploit
-            let registry = borrow_global<VeTokenRegistry>(dao_address);
+            let registry = borrow_global_mut<VeTokenRegistry>(dao_address);
+            registry.total_locked = registry.total_locked; // Just keeping track
+            update_total_locked_history(dao_address, registry.total_locked);
             into_ve_data.rebase_debt = (((new_total as u256) * (registry.acc_rebase_per_share as u256) / PRECISION) as u128);
 
             // Correctly update snapshots
-            let len = smart_vector::length(&into_ve_data.snapshots);
-            if (len > 0 && smart_vector::borrow(&into_ve_data.snapshots, len - 1).pilgrim == current_epoch) {
-                let snap = smart_vector::borrow_mut(&mut into_ve_data.snapshots, len - 1);
-                snap.locked_amount = new_total;
-                snap.end_epoch = new_end_epoch;
-            } else {
-                smart_vector::push_back(&mut into_ve_data.snapshots, Snapshot {
-                    pilgrim: current_epoch,
-                    locked_amount: new_total,
-                    end_epoch: new_end_epoch,
-                });
-            };
+            upsert_snapshot(into_ve_data);
 
             is_delegated = option::is_some(&into_ve_data.delegate) && *option::borrow(&into_ve_data.delegate) != owner_addr;
         };
@@ -832,10 +792,7 @@ module dao_factory::legacy {
         legacy_addr: address,
         delegate_addr: address,
     ) acquires VeToken, VeTokenRefs, VeTokenRegistry {
-        let owner_addr = signer::address_of(owner);
-        assert!(object::is_object(legacy_addr), error::invalid_argument(E_INVALID_OBJECT));
-        let legacy = object::address_to_object<VeToken>(legacy_addr);
-        assert!(object::is_owner(legacy, owner_addr), error::permission_denied(E_NOT_OWNER));
+        let (owner_addr, _) = verify_owner_and_get_legacy(owner, legacy_addr);
         assert!(delegate_addr != owner_addr, error::invalid_argument(E_SELF_DELEGATE));
 
         let obj_addr = legacy_addr;
@@ -861,10 +818,7 @@ module dao_factory::legacy {
         owner: &signer,
         legacy_addr: address,
     ) acquires VeToken, VeTokenRefs, VeTokenRegistry {
-        let owner_addr = signer::address_of(owner);
-        assert!(object::is_object(legacy_addr), error::invalid_argument(E_INVALID_OBJECT));
-        let legacy = object::address_to_object<VeToken>(legacy_addr);
-        assert!(object::is_owner(legacy, owner_addr), error::permission_denied(E_NOT_OWNER));
+        let (owner_addr, _) = verify_owner_and_get_legacy(owner, legacy_addr);
 
         let obj_addr = legacy_addr;
         let ve_data = borrow_global_mut<VeToken>(obj_addr);
@@ -887,15 +841,18 @@ module dao_factory::legacy {
     // Checks if an address is the current delegate of a veToken.
     // Used by witness::cast_vote to authorize delegated votes.
     #[view]
-    public fun is_delegate(legacy: Object<VeToken>, addr: address): bool acquires VeToken {
-        let obj_addr = object::object_address(&legacy);
-        if (!exists<VeToken>(obj_addr)) return false;
-        let ve_data = borrow_global<VeToken>(obj_addr);
+    public fun is_delegate(ve_token_obj: Object<VeToken>, user: address): bool acquires VeToken {
+        let ve_token = borrow_global<VeToken>(object::object_address(&ve_token_obj));
         
         // Implicitly void delegation if the token was transferred to a new owner
-        if (object::owner(legacy) != ve_data.delegator) return false;
+        if (object::owner(ve_token_obj) != ve_token.delegator) return false;
 
-        option::is_some(&ve_data.delegate) && *option::borrow(&ve_data.delegate) == addr
+        option::contains(&ve_token.delegate, &user)
+    }
+
+    public(friend) fun set_last_voted_epoch(ve_token_obj: Object<VeToken>, epoch: u64) acquires VeToken {
+        let ve_token = borrow_global_mut<VeToken>(object::object_address(&ve_token_obj));
+        ve_token.last_voted_epoch = epoch;
     }
 
     // Views 
@@ -919,6 +876,15 @@ module dao_factory::legacy {
 
         let len = smart_vector::length(&ve_data.snapshots);
         if (len > 0) {
+            // SECURITY FIX (VULN-04): If the queried epoch predates the first
+            // snapshot, the lock did not exist yet and its power must be 0.
+            // Previously the fallback silently returned the CURRENT power for
+            // past epochs, so a freshly created lock could propose/vote in the
+            // same epoch it was created, bypassing the anti-flash-loan
+            // "previous epoch" protection used by herald, witness and zeal.
+            let first_snap = smart_vector::borrow(&ve_data.snapshots, 0);
+            if (query_epoch < first_snap.pilgrim) return 0;
+
             let i = len;
             while (i > 0) {
                 i = i - 1;
@@ -978,6 +944,31 @@ module dao_factory::legacy {
     public fun get_total_locked(dao_address: address): u64 acquires VeTokenRegistry {
         if (!exists<VeTokenRegistry>(dao_address)) return 0;
         borrow_global<VeTokenRegistry>(dao_address).total_locked
+    }
+
+    #[view]
+    public fun get_total_locked_at(dao_address: address, query_epoch: u64): u64 acquires VeTokenRegistry, TotalLockedHistory {
+        if (!exists<TotalLockedHistory>(dao_address)) {
+            // Fallback for DAOs that don't have the history initialized
+            return get_total_locked(dao_address)
+        };
+
+        let history = borrow_global<TotalLockedHistory>(dao_address);
+        let len = smart_vector::length(&history.snapshots);
+        if (len == 0) return 0;
+
+        let first_snap = smart_vector::borrow(&history.snapshots, 0);
+        if (query_epoch < first_snap.pilgrim) return 0;
+
+        let i = len;
+        while (i > 0) {
+            i = i - 1;
+            let snap = smart_vector::borrow(&history.snapshots, i);
+            if (snap.pilgrim <= query_epoch) {
+                return snap.total_locked
+            };
+        };
+        0
     }
 
     #[view]
@@ -1046,10 +1037,7 @@ module dao_factory::legacy {
         owner: &signer,
         legacy_addr: address,
     ) acquires VeToken, VeTokenRegistry {
-        let owner_addr = signer::address_of(owner);
-        assert!(object::is_object(legacy_addr), error::invalid_argument(E_INVALID_OBJECT));
-        let legacy = object::address_to_object<VeToken>(legacy_addr);
-        assert!(object::is_owner(legacy, owner_addr), error::permission_denied(E_NOT_OWNER));
+        let (owner_addr, _) = verify_owner_and_get_legacy(owner, legacy_addr);
         
         let obj_addr = legacy_addr;
         
@@ -1070,5 +1058,15 @@ module dao_factory::legacy {
             obj_addr,
             ve_data.locked_amount
         )
+    }
+
+    // --- Helpers for Deduplication ---
+
+    fun verify_owner_and_get_legacy(owner: &signer, legacy_addr: address): (address, Object<VeToken>) {
+        let owner_addr = signer::address_of(owner);
+        assert!(object::is_object(legacy_addr), error::invalid_argument(E_INVALID_OBJECT));
+        let legacy = object::address_to_object<VeToken>(legacy_addr);
+        assert!(object::is_owner(legacy, owner_addr), error::permission_denied(E_NOT_OWNER));
+        (owner_addr, legacy)
     }
 }

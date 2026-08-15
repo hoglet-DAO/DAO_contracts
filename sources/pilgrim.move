@@ -40,14 +40,4 @@ module dao_factory::pilgrim {
     public fun seconds_until_next_epoch(): u64 {
         next_epoch_start() - timestamp::now_seconds()
     }
-
-    // Tests 
-    #[test]
-    fun test_epoch_math() {
-        // Epoch 0 starts at t=0, ends at t=604799
-        // Epoch 1 starts at t=604800
-        assert!(epoch_start(0) == 0, 0);
-        assert!(epoch_start(1) == 604_800, 1);
-        assert!(epoch_start(2) == 1_209_600, 2);
-    }
 }

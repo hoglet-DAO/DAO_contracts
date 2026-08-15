@@ -99,8 +99,16 @@ module dao_factory::sentinel {
         assert!(!state.is_paused || current_epoch >= state.pause_expiry_epoch, error::invalid_state(E_ALREADY_PAUSED));
 
         // Cooldown: cannot re-pause immediately after unpausing
+        // SECURITY FIX (M8): Consider the auto-expiry epoch as an unpause event to prevent
+        // skipping the cooldown by chaining pauses without calling unpause().
+        let effective_unpause = if (state.pause_expiry_epoch > state.last_unpause_epoch) {
+            state.pause_expiry_epoch
+        } else {
+            state.last_unpause_epoch
+        };
+        
         assert!(
-            state.last_unpause_epoch == 0 || current_epoch >= state.last_unpause_epoch + PAUSE_COOLDOWN_EPOCHS,
+            effective_unpause == 0 || current_epoch >= effective_unpause + PAUSE_COOLDOWN_EPOCHS,
             error::invalid_state(E_COOLDOWN_ACTIVE)
         );
 
@@ -186,7 +194,7 @@ module dao_factory::sentinel {
         if (!exists<PauseState>(dao_address)) return 0;
         borrow_global<PauseState>(dao_address).pause_expiry_epoch
     }
-
+    
     #[view]
     public fun can_pause(dao_address: address): bool acquires PauseState {
         if (!exists<PauseState>(dao_address)) return false;

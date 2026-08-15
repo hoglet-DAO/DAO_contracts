@@ -12,7 +12,6 @@ module dao_factory::zeal {
     use supra_framework::fungible_asset::{Self, FungibleAsset, Metadata};
     use supra_framework::primary_fungible_store;
     use supra_framework::object::{Self, ExtendRef};
-    use std::option::{Self, Option};
 
     use supra_framework::event;
     use std::error;
@@ -22,6 +21,7 @@ module dao_factory::zeal {
     use dao_factory::legacy;
     use dao_factory::pilgrim;
     use dao_factory::foundry;
+    use dao_factory::sentinel;
 
     // Errors 
     const E_NOT_AUTHORIZED: u64  = 1;
@@ -36,6 +36,8 @@ module dao_factory::zeal {
     const E_ALREADY_CLAIMED: u64 = 10;
     const E_NO_EMISSIONS: u64    = 11;
     const E_INVALID_EPOCH: u64   = 12;
+    const E_INVALID_TOKEN: u64   = 13;
+    const E_PAUSED: u64          = 14;
 
     // Structs 
 
@@ -84,6 +86,7 @@ module dao_factory::zeal {
         dao_address: address,
         gauge_id: u64,
         destination: address,
+        staking_token_addr: address,
     }
 
     #[event]
@@ -122,7 +125,7 @@ module dao_factory::zeal {
     public(friend) fun initialize(
         dao_signer: &signer,
         default_destination: address,
-        amm_pool_address_opt: Option<address>,
+        staking_tokens: vector<address>,
     ) acquires GaugeRegistry {
         let constructor_ref = object::create_object(signer::address_of(dao_signer));
 
@@ -139,9 +142,14 @@ module dao_factory::zeal {
             default_destination,
         });
 
-        if (option::is_some(&amm_pool_address_opt)) {
-            let pool_address = option::extract(&mut amm_pool_address_opt);
-            create_gauge(dao_signer, pool_address);
+        let len = std::vector::length(&staking_tokens);
+        let i = 0;
+        let dao_token_address = dao_factory::legacy::get_dao_token_address(signer::address_of(dao_signer));
+        while (i < len) {
+            let staking_token_addr = *std::vector::borrow(&staking_tokens, i);
+            let gauge_address = foundry::create_gauge(dao_signer, staking_token_addr, dao_token_address);
+            create_gauge(dao_signer, gauge_address, staking_token_addr);
+            i = i + 1;
         };
     }
 
@@ -156,6 +164,7 @@ module dao_factory::zeal {
     public(friend) fun create_gauge(
         dao_signer: &signer,
         destination: address,
+        staking_token_addr: address,
     ): u64 acquires GaugeRegistry {
         let dao_address = signer::address_of(dao_signer);
         let registry = borrow_global_mut<GaugeRegistry>(dao_address);
@@ -167,7 +176,7 @@ module dao_factory::zeal {
         });
         registry.next_gauge_id = gauge_id + 1;
 
-        event::emit(GaugeCreated { dao_address, gauge_id, destination });
+        event::emit(GaugeCreated { dao_address, gauge_id, destination, staking_token_addr });
         gauge_id
     }
 
@@ -202,10 +211,16 @@ module dao_factory::zeal {
         gauge_ids: vector<u64>,
         weights: vector<u64>,
     ) acquires GaugeRegistry {
+        assert!(!sentinel::is_paused(dao_address), error::invalid_state(E_PAUSED));
         assert!(supra_framework::object::is_object(legacy_addr), error::invalid_argument(E_NOT_OBJECT));
         let ve_token_obj = supra_framework::object::address_to_object<legacy::VeToken>(legacy_addr);
         let voter_addr = signer::address_of(voter);
-        assert!(supra_framework::object::is_owner(ve_token_obj, voter_addr), error::permission_denied(E_NOT_OWNER));
+        
+        // Allow both the strict owner OR the authorized delegate to vote
+        let is_owner = supra_framework::object::is_owner(ve_token_obj, voter_addr);
+        let is_delegate = legacy::is_delegate(ve_token_obj, voter_addr);
+        assert!(is_owner || is_delegate, error::permission_denied(E_NOT_OWNER));
+        
         assert!(!legacy::is_expired(ve_token_obj), error::invalid_state(E_LOCK_EXPIRED));
         assert!(legacy::get_dao_address(ve_token_obj) == dao_address, error::invalid_argument(E_NOT_AUTHORIZED));
 
@@ -281,6 +296,9 @@ module dao_factory::zeal {
         } else { 0 };
         smart_table::upsert(&mut registry.epoch_total_votes, current_epoch, current_total + power);
 
+        // Record the epoch in which this veToken voted to prevent double-voting via merge
+        legacy::set_last_voted_epoch(ve_token_obj, current_epoch);
+
         event::emit(Voted { dao_address, pilgrim: current_epoch, voter: voter_addr, legacy: ve_addr, power });
     }
 
@@ -326,6 +344,16 @@ module dao_factory::zeal {
     ) acquires GaugeRegistry {
         assert!(target_epoch < pilgrim::now(), error::invalid_argument(E_INVALID_EPOCH));
         assert!(supra_framework::object::is_object(token_metadata_addr), error::invalid_argument(E_NOT_OBJECT));
+
+        // SECURITY FIX (VULN-01): The emissions vault only ever holds the DAO's
+        // governance token (deposited by jubilee). Derive the expected token
+        // internally instead of trusting the caller-supplied metadata address,
+        // otherwise an attacker could pass a worthless token, get it forwarded
+        // to the gauge via notify_reward_amount, mark the epoch as claimed and
+        // permanently strand the real emissions in the vault.
+        let dao_token_address = legacy::get_dao_token_address(dao_address);
+        assert!(token_metadata_addr == dao_token_address, error::invalid_argument(E_INVALID_TOKEN));
+
         let token_metadata = supra_framework::object::address_to_object<Metadata>(token_metadata_addr);
 
         let registry = borrow_global_mut<GaugeRegistry>(dao_address);
@@ -352,10 +380,16 @@ module dao_factory::zeal {
             if (share > 0) {
                 let vault_signer = object::generate_signer_for_extending(&registry.vault_extend_ref);
                 let share_fa = primary_fungible_store::withdraw(&vault_signer, token_metadata, share);
-                let dest = smart_table::borrow(&registry.gauges, gauge_id).destination;
+                let gauge = smart_table::borrow(&registry.gauges, gauge_id);
                 
-                // Hard-coupling to the DAO's Gauge Factory
-                foundry::notify_reward_amount(dest, share_fa);
+                if (gauge.is_active) {
+                    // Hard-coupling to the DAO's Gauge Factory
+                    foundry::notify_reward_amount(gauge.destination, share_fa);
+                } else {
+                    // SECURITY FIX (M7): "Kill gauge" real.
+                    // Redirige los fondos de un gauge muerto hacia la tesoreria.
+                    primary_fungible_store::deposit(registry.default_destination, share_fa);
+                };
                 
                 event::emit(GaugeEmissionClaimed { 
                     dao_address, 
@@ -426,6 +460,23 @@ module dao_factory::zeal {
             i = i + 1;
         };
         0
+    }
+
+    #[view]
+    public fun get_all_user_votes(
+        dao_address: address,
+        pilgrim: u64,
+        ve_token_addr: address,
+    ): (vector<u64>, vector<u128>) acquires GaugeRegistry {
+        if (!exists<GaugeRegistry>(dao_address)) return (vector[], vector[]);
+        let registry = borrow_global<GaugeRegistry>(dao_address);
+        if (!smart_table::contains(&registry.epoch_user_votes, pilgrim)) return (vector[], vector[]);
+        
+        let epoch_votes = smart_table::borrow(&registry.epoch_user_votes, pilgrim);
+        if (!smart_table::contains(epoch_votes, ve_token_addr)) return (vector[], vector[]);
+        
+        let user_vote = smart_table::borrow(epoch_votes, ve_token_addr);
+        (user_vote.gauge_ids, user_vote.powers)
     }
 
     #[view]
