@@ -6,7 +6,7 @@
 This software (the smart contracts) and associated documentation files are currently proprietary. All rights are reserved by Hoglet DAO. 
 
 You may read and review the Software for the purposes of auditing, education, or evaluating the code. However, you may **not**:
-- Use the Software for commercial purposes.
+- Use the Software for commercial purposes, including but not limited to deploying these contracts on any Mainnet or production environment.
 - Copy, modify, merge, publish, distribute, sublicense, or sell copies of the Software.
 - Deploy these smart contracts for competing projects.
 
