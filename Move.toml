@@ -5,19 +5,25 @@ authors = []
 
 [addresses]
 
-POWER = "0xe9030ffafb1fd67a3311ad756c3e7435b6d50519b2c571f400f10462c56507cd"
-dao_factory = "0xe9030ffafb1fd67a3311ad756c3e7435b6d50519b2c571f400f10462c56507cd"
+SPIRIT = "0x90efa5e03f87ae8feb62ce489942e0b2837b258772d06b20597ea0f6114a96db"
+dao_factory = "0x90efa5e03f87ae8feb62ce489942e0b2837b258772d06b20597ea0f6114a96db"
 
 [dev-addresses]
 
 [dependencies.SupraFramework]
 git = "https://github.com/Entropy-Foundation/aptos-core.git"
-rev = "b710f2df13c46ba8ec7c9aec2a5ed78bcfd4b3ce"
+rev = "dev"
 subdir = "aptos-move/framework/supra-framework"
 
 [dependencies.AptosTokenObjects]
 git = "https://github.com/Entropy-Foundation/aptos-core.git"
-rev = "b710f2df13c46ba8ec7c9aec2a5ed78bcfd4b3ce"
+rev = "dev"
 subdir = "aptos-move/framework/aptos-token-objects"
+
+[dependencies.dao_libs]
+local = "../dao_libs"
+
+[dependencies.dao_tokens]
+local = "../dao_tokens"
 
 [dev-dependencies]
