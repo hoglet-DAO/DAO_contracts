@@ -195,15 +195,14 @@ module dao_factory::jubilee {
     }
 
     public(friend) fun update_config(dao_signer: &signer, config_key: u64, value: u64) acquires MinterConfig {
-        let config = borrow_global_mut<MinterConfig>(signer::address_of(dao_signer));
+        let dao_address = signer::address_of(dao_signer);
+        assert_valid_emission_param(dao_address, config_key, value);
+        let config = borrow_global_mut<MinterConfig>(dao_address);
         if (config_key == 9) {
-            assert!(value <= 500, error::invalid_argument(E_INVALID_BPS)); // Max 5% decay
             config.decay_bps = value;
         } else if (config_key == 10) {
-            assert!(value <= config.weekly_emission, error::invalid_argument(E_INVALID_BPS));
             config.tail_emission = value;
         } else if (config_key == 11) {
-            assert!(value >= 8000 && value <= 10000, error::invalid_argument(E_INVALID_BPS)); // Min 80% to gauges
             config.gauge_split_bps = value;
         } else {
             abort error::invalid_argument(E_INVALID_BPS)

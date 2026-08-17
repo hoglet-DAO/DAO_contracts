@@ -17,12 +17,10 @@ module dao_factory::foundry {
     use aptos_token_objects::token;
     use dao_factory::pilgrim;
     use dao_factory::boost_registry;
-    use dao_factory::sentinel;
 
     // Errors
     const E_ZERO_AMOUNT: u64 = 2;
     const E_INSUFFICIENT_BALANCE: u64 = 3;
-    const E_PAUSED: u64 = 4;
 
     // Constants
     const REWARD_SCALE: u128 = 1_000_000_000_000_000_000;
@@ -261,43 +259,20 @@ module dao_factory::foundry {
         let current_bps = get_stored_boost_bps(gauge, account);
         let dao_address = gauge.dao_address;
 
-        let new_bps: u64 = 0;
-        let kept_nfts = vector::empty<address>();
-        let returned_nfts = vector::empty<address>();
-        let counted_collections = vector::empty<address>();
-
-        let i = 0;
-        let len = vector::length(&stored_nfts);
-        while (i < len) {
-            let nft_addr = *vector::borrow(&stored_nfts, i);
-            i = i + 1;
-
-            if (object::object_exists<token::Token>(nft_addr)) {
-                let token_obj = object::address_to_object<token::Token>(nft_addr);
-                let collection_obj = token::collection_object(token_obj);
-                let collection_addr = object::object_address(&collection_obj);
-                let coll_bps = boost_registry::get_collection_boost(dao_address, collection_addr);
-
-                if (coll_bps == 0 || vector::contains(&counted_collections, &collection_addr)) {
-                    // Collection removed by governance (or duplicate): return the NFT.
-                    vector::push_back(&mut returned_nfts, nft_addr);
-                } else {
-                    vector::push_back(&mut counted_collections, collection_addr);
-                    vector::push_back(&mut kept_nfts, nft_addr);
-                    new_bps = new_bps + coll_bps;
-                };
-            };
-            // else: NFT burned while escrowed -> silently dropped from evidence.
-        };
-
-        let hard_cap = boost_registry::hard_cap_bps();
-        if (new_bps > hard_cap) { new_bps = hard_cap };
+        let (new_bps, kept_nfts, returned_nfts) = boost_registry::compute_escrowed_boost(dao_address, stored_nfts);
 
         if (new_bps != current_bps || vector::length(&kept_nfts) != vector::length(&stored_nfts)) {
             // Settle at the OLD working balance before mutating.
-            update_reward(gauge, account);
-            return_escrowed_nfts(gauge, returned_nfts, account);
-            smart_table::upsert(&mut gauge.user_boosts, account, UserBoost { boost_bps: new_bps, nfts: kept_nfts });
+            resync_and_settle(gauge_addr, gauge, account);
+
+            if (vector::length(&returned_nfts) > 0) {
+                return_escrowed_nfts(gauge, returned_nfts, account);
+            };
+
+            let user_boost_data = smart_table::borrow_mut(&mut gauge.user_boosts, account);
+            user_boost_data.boost_bps = new_bps;
+            user_boost_data.nfts = kept_nfts;
+
             let actual_balance = get_actual_balance(gauge, account);
             refresh_working_balance(gauge, account, actual_balance);
 
@@ -346,7 +321,6 @@ module dao_factory::foundry {
     public entry fun get_reward(user: &signer, gauge_addr: address) acquires Gauge {
         let user_addr = signer::address_of(user);
         let gauge = borrow_global_mut<Gauge>(gauge_addr);
-        assert!(!sentinel::is_paused(gauge.dao_address), error::invalid_state(E_PAUSED));
 
         resync_and_settle(gauge_addr, gauge, user_addr);
 
@@ -382,12 +356,17 @@ module dao_factory::foundry {
     // transfer aborts. Governance should not approve soulbound collections.
     //
     // Call `unboost` to withdraw the NFTs and clear the boost.
+    // Helper to settle rewards and clear old boost state before applying new ones or unboosting.
+    fun prepare_boost_mutation(gauge: &mut Gauge, user_addr: address) {
+        update_reward(gauge, user_addr);
+        remove_and_return_old_boost(gauge, user_addr);
+    }
+
     public entry fun apply_boost(user: &signer, gauge_addr: address, nft_addrs: vector<address>) acquires Gauge {
         let user_addr = signer::address_of(user);
         let gauge = borrow_global_mut<Gauge>(gauge_addr);
 
-        update_reward(gauge, user_addr);
-        remove_and_return_old_boost(gauge, user_addr);
+        prepare_boost_mutation(gauge, user_addr);
 
         // Verify ownership and collection approval on-chain.
         let (boost_bps, valid_nfts) = boost_registry::compute_boost(gauge.dao_address, user_addr, nft_addrs);
@@ -417,8 +396,7 @@ module dao_factory::foundry {
         let user_addr = signer::address_of(user);
         let gauge = borrow_global_mut<Gauge>(gauge_addr);
 
-        update_reward(gauge, user_addr);
-        remove_and_return_old_boost(gauge, user_addr);
+        prepare_boost_mutation(gauge, user_addr);
 
         let actual_balance = get_actual_balance(gauge, user_addr);
         refresh_working_balance(gauge, user_addr, actual_balance);

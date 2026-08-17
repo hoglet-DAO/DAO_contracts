@@ -56,6 +56,7 @@ module dao_factory::petra {
     const E_INVALID_EMISSION_PPM: u64 = 23;
     const E_INVALID_EXTENSION: u64 = 24;
     const E_NOT_INFLATIONARY: u64 = 25;
+    const E_INVALID_GRACE_PERIOD: u64 = 26;
 
     // Constants 
     const MAX_CREATION_FEE: u64 = 100_000_000_000; // 1000 SUPRA (8 decimals)
@@ -256,46 +257,53 @@ module dao_factory::petra {
     // causing every new DAO creation to abort, or producing governance
     // parameters outside safe limits.
     
+    fun assert_bounds(value: u64, min: u64, max: u64, err_code: u64) {
+        assert!(value >= min && value <= max, error::invalid_argument(err_code));
+    }
+
     public entry fun set_default_config(admin: &signer, config_key: u8, value: u64) acquires FactoryConfig {
         assert_admin(admin);
         let config = borrow_global_mut<FactoryConfig>(@dao_factory);
         
         if (config_key == 0) {
-            assert!(value > 0 && value <= config.default_quorum_denominator, error::invalid_argument(E_INVALID_QUORUM));
+            assert_bounds(value, 1, config.default_quorum_denominator, E_INVALID_QUORUM);
             assert!(value * 100 / config.default_quorum_denominator >= 50, error::invalid_argument(E_INVALID_QUORUM));
             config.default_super_quorum_threshold = value;
         } else if (config_key == 1) {
-            assert!(value > 0 && value <= config.default_quorum_denominator, error::invalid_argument(E_INVALID_QUORUM));
+            assert_bounds(value, 1, config.default_quorum_denominator, E_INVALID_QUORUM);
             config.default_quorum_numerator = value;
         } else if (config_key == 2) {
             assert!(value >= config.default_quorum_numerator && value >= config.default_super_quorum_threshold, error::invalid_argument(E_INVALID_QUORUM));
             config.default_quorum_denominator = value;
         } else if (config_key == 3) {
-            assert!(value <= charter::max_delay_seconds(), error::invalid_argument(E_INVALID_EXTENSION));
+            assert_bounds(value, 0, charter::max_delay_seconds(), E_INVALID_EXTENSION);
             config.default_late_quorum_extension = value;
         } else if (config_key == 4) {
-            assert!(value >= charter::min_delay_seconds() && value <= charter::max_delay_seconds(), error::invalid_argument(E_INVALID_VOTING_DELAY));
+            assert_bounds(value, charter::min_delay_seconds(), charter::max_delay_seconds(), E_INVALID_VOTING_DELAY);
             config.default_voting_delay = value;
         } else if (config_key == 5) {
-            assert!(value >= charter::min_period_seconds() && value <= charter::max_delay_seconds(), error::invalid_argument(E_INVALID_VOTING_PERIOD));
+            assert_bounds(value, charter::min_period_seconds(), charter::max_delay_seconds(), E_INVALID_VOTING_PERIOD);
             config.default_voting_period = value;
         } else if (config_key == 6) {
-            assert!(value > 0 && value <= 1_000_000, error::invalid_argument(E_INVALID_THRESHOLD_PPM));
+            assert_bounds(value, 1, 1_000_000, E_INVALID_THRESHOLD_PPM);
             config.default_proposal_threshold_ppm = value;
         } else if (config_key == 7) {
-            assert!(value >= charter::min_delay_seconds() && value <= charter::max_delay_seconds(), error::invalid_argument(E_INVALID_TIMELOCK));
+            assert_bounds(value, charter::min_delay_seconds(), charter::max_delay_seconds(), E_INVALID_TIMELOCK);
             config.default_timelock_delay = value;
+        } else if (config_key == 8) {
+            assert_bounds(value, 0, 31536000, E_INVALID_GRACE_PERIOD);
+            config.default_grace_period = value;
         } else if (config_key == 9) {
-            assert!(value <= 500, error::invalid_argument(E_DECAY_TOO_HIGH));
+            assert_bounds(value, 0, 500, E_DECAY_TOO_HIGH);
             config.default_decay_bps = value;
         } else if (config_key == 10) {
-            assert!(value <= 1_000_000, error::invalid_argument(E_INVALID_EMISSION_PPM));
+            assert_bounds(value, 0, 1_000_000, E_INVALID_EMISSION_PPM);
             config.default_tail_emission_ppm = value;
         } else if (config_key == 11) {
-            assert!(value >= 8000 && value <= 10000, error::invalid_argument(E_GAUGE_SPLIT_TOO_LOW));
+            assert_bounds(value, 8000, 10000, E_GAUGE_SPLIT_TOO_LOW);
             config.default_gauge_split_bps = value;
         } else if (config_key == 12) {
-            assert!(value <= 1_000_000, error::invalid_argument(E_INVALID_EMISSION_PPM));
+            assert_bounds(value, 0, 1_000_000, E_INVALID_EMISSION_PPM);
             config.default_initial_emission_ppm = value;
         } else {
             abort error::invalid_argument(E_INVALID_ADDRESS)
@@ -343,6 +351,15 @@ module dao_factory::petra {
     // The caller (launcher) MUST mathematically guarantee that the final real token supply generated matches 
     // this `expected_supply`. If the real supply ends up being significantly lower than `expected_supply`, 
     // the DAO's proposal thresholds will be mathematically impossible to reach, freezing governance forever.
+    fun assert_launcher(launcher_address: address) acquires LauncherRegistry {
+        let launcher_registry = borrow_global<LauncherRegistry>(@dao_factory);
+        assert!(
+            smart_table::contains(&launcher_registry.approved_launchers, launcher_address) && 
+            *smart_table::borrow(&launcher_registry.approved_launchers, launcher_address),
+            error::permission_denied(E_UNAUTHORIZED_LAUNCHER)
+        );
+    }
+
     public fun create_dao_static_from_launcher(
         creator: &signer,
         launcher_signer: &signer,
@@ -350,12 +367,7 @@ module dao_factory::petra {
         expected_supply: u128
     ): address acquires FactoryConfig, DaoRegistry, LauncherRegistry {
         let launcher_address = signer::address_of(launcher_signer);
-        let launcher_registry = borrow_global<LauncherRegistry>(@dao_factory);
-        assert!(
-            smart_table::contains(&launcher_registry.approved_launchers, launcher_address) && 
-            *smart_table::borrow(&launcher_registry.approved_launchers, launcher_address),
-            error::permission_denied(E_UNAUTHORIZED_LAUNCHER)
-        );
+        assert_launcher(launcher_address);
 
         charge_creation_fee(creator);
 
@@ -382,18 +394,7 @@ module dao_factory::petra {
         dao_address
     }
 
-    // Shared static-DAO creation flow (used by both the public entry point
-    // and approved launchers). Creates the resource account, computes the
-    // governance threshold and initializes the governance-only module set
-    // (no zeal / restore / boost_registry / jubilee: those are exclusive
-    // to inflationary DAOs).
-    fun create_dao_static_internal(
-        creator: &signer,
-        governance_token: Object<Metadata>,
-        config: &FactoryConfig,
-        launcher_address: address,
-        expected_supply_opt: option::Option<u128>,
-    ): address acquires DaoRegistry {
+    fun prepare_dao_creation(creator: &signer, governance_token: Object<Metadata>, expected_supply_opt: option::Option<u128>): (signer, account::SignerCapability, address, string::String, u64) {
         let governance_token_addr = object::object_address(&governance_token);
         let name = fungible_asset::name(governance_token);
         let symbol = fungible_asset::symbol(governance_token);
@@ -411,15 +412,27 @@ module dao_factory::petra {
 
         let supply_opt = fungible_asset::supply(governance_token);
         assert!(option::is_some(&supply_opt), error::invalid_argument(E_NO_SUPPLY_TRACKING));
-        let current_supply = if (option::is_some(&expected_supply_opt)) {
-            let expected = *option::borrow(&expected_supply_opt);
-            if (expected > 0) { expected } else { *option::borrow(&supply_opt) }
-        } else {
-            *option::borrow(&supply_opt)
-        };
+        let current_supply = if (option::is_some(&expected_supply_opt)) { *option::borrow(&expected_supply_opt) } else { *option::borrow(&supply_opt) };
         assert!(current_supply > 0, error::invalid_argument(E_SUPPLY_ZERO));
 
-        let dynamic_threshold = (((current_supply * (config.default_proposal_threshold_ppm as u128)) / 1000000) as u64);
+        (dao_signer, signer_cap, dao_address, name, (current_supply as u64)) // u64 for easier threshold math
+    }
+
+    // Shared static-DAO creation flow (used by both the public entry point
+    // and approved launchers). Creates the resource account, computes the
+    // governance threshold and initializes the governance-only module set
+    // (no zeal / restore / boost_registry / jubilee: those are exclusive
+    // to inflationary DAOs).
+    fun create_dao_static_internal(
+        creator: &signer,
+        governance_token: Object<Metadata>,
+        config: &FactoryConfig,
+        launcher_address: address,
+        expected_supply_opt: option::Option<u128>,
+    ): address acquires DaoRegistry {
+        let (dao_signer, signer_cap, dao_address, name, current_supply) = prepare_dao_creation(creator, governance_token, expected_supply_opt);
+
+        let dynamic_threshold = ((((current_supply as u128) * (config.default_proposal_threshold_ppm as u128)) / 1000000) as u64);
         // SECURITY FIX (VULN-07): tiny supplies round the threshold down to 0,
         // which aborts charter::initialize (E_INVALID_THRESHOLD) and bricks
         // DAO creation for that token. Clamp to a minimum of 1.
@@ -449,7 +462,7 @@ module dao_factory::petra {
         event::emit(DaoCreated {
             creator: signer::address_of(creator),
             dao_address,
-            governance_token: governance_token_addr,
+            governance_token: object::object_address(&governance_token),
             name,
             is_inflationary: false,
         });
@@ -513,12 +526,7 @@ module dao_factory::petra {
         amm_pool_addresses: vector<address>
     ): address acquires FactoryConfig, DaoRegistry, LauncherRegistry {
         let launcher_address = signer::address_of(launcher_signer);
-        let launcher_registry = borrow_global<LauncherRegistry>(@dao_factory);
-        assert!(
-            smart_table::contains(&launcher_registry.approved_launchers, launcher_address) && 
-            *smart_table::borrow(&launcher_registry.approved_launchers, launcher_address),
-            error::permission_denied(E_UNAUTHORIZED_LAUNCHER)
-        );
+        assert_launcher(launcher_address);
 
         charge_creation_fee(creator);
         let config = borrow_global<FactoryConfig>(@dao_factory);
@@ -541,32 +549,15 @@ module dao_factory::petra {
         );
 
         let governance_token_addr = object::object_address(&governance_token);
-        let name = fungible_asset::name(governance_token);
-        let symbol = fungible_asset::symbol(governance_token);
-        assert!(string::length(&name) <= 60, error::invalid_argument(E_NAME_TOO_LONG));
-        assert!(string::length(&symbol) <= 20, error::invalid_argument(E_SYMBOL_TOO_LONG));
-        
-        let seed = bcs::to_bytes(&governance_token_addr);
-        let time_micros = timestamp::now_microseconds();
-        vector::append(&mut seed, bcs::to_bytes(&time_micros));
-        let (dao_signer, signer_cap) = account::create_resource_account(creator, seed);
-        let dao_address = signer::address_of(&dao_signer);
+        let (dao_signer, signer_cap, dao_address, name, current_supply) = prepare_dao_creation(creator, governance_token, expected_supply_opt);
 
-        let decimals = fungible_asset::decimals(governance_token);
-        assert!(decimals <= 8, error::invalid_argument(E_DECIMALS_TOO_HIGH));
-
-        let supply_opt = fungible_asset::supply(governance_token);
-        assert!(option::is_some(&supply_opt), error::invalid_argument(E_NO_SUPPLY_TRACKING));
-        let current_supply = if (option::is_some(&expected_supply_opt)) { *option::borrow(&expected_supply_opt) } else { *option::borrow(&supply_opt) };
-        assert!(current_supply > 0, error::invalid_argument(E_SUPPLY_ZERO));
-
-        let dynamic_threshold = (((current_supply * (config.default_proposal_threshold_ppm as u128)) / 1000000) as u64);
+        let dynamic_threshold = ((((current_supply as u128) * (config.default_proposal_threshold_ppm as u128)) / 1000000) as u64);
         // SECURITY FIX (VULN-07): tiny supplies round the threshold down to 0,
         // which aborts charter::initialize (E_INVALID_THRESHOLD) and bricks
         // DAO creation for that token. Clamp to a minimum of 1.
         if (dynamic_threshold == 0) { dynamic_threshold = 1 };
-        let dynamic_initial_emission = (((current_supply * (config.default_initial_emission_ppm as u128)) / 1000000) as u64);
-        let dynamic_tail_emission = (((current_supply * (config.default_tail_emission_ppm as u128)) / 1000000) as u64);
+        let dynamic_initial_emission = ((((current_supply as u128) * (config.default_initial_emission_ppm as u128)) / 1000000) as u64);
+        let dynamic_tail_emission = ((((current_supply as u128) * (config.default_tail_emission_ppm as u128)) / 1000000) as u64);
 
         charter::initialize(
             &dao_signer, name, config.default_voting_delay, config.default_voting_period, dynamic_threshold,

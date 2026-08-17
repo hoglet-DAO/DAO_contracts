@@ -360,15 +360,16 @@ module dao_factory::herald {
         config_key: u8,
         config_value: u64,
     ) acquires HeraldState {
-        assert!(config_key <= 11, error::invalid_argument(E_INVALID_CONFIG_KEY));
+        assert!(config_key <= 11 || (config_key >= 20 && config_key <= 27), error::invalid_argument(E_INVALID_CONFIG_KEY));
         if (config_key <= 8) {
             charter::validate_config_value(dao_address, config_key, config_value);
-        } else {
+        } else if (config_key >= 9 && config_key <= 11) {
             // Keys 9-11 are jubilee emission parameters (decay, tail emission,
             // gauge split): they only exist on inflationary DAOs.
             assert!(charter::is_inflationary(dao_address), error::invalid_state(E_NOT_INFLATIONARY));
             jubilee::assert_valid_emission_param(dao_address, (config_key as u64), config_value);
         };
+        // Keys 20-27 are Smart Token parameters and require no extra pre-validation here.
         let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required) = 
             validate_and_prepare_proposal(proposer, legacy_addr, dao_address, true); // Config changes require super quorum
 
@@ -468,7 +469,7 @@ module dao_factory::herald {
         string_value: String,
         bool_value: bool,
     ) acquires HeraldState {
-        assert!(setting_type <= 1, error::invalid_argument(E_INVALID_ACTION_TYPE));
+        assert!(setting_type <= 3, error::invalid_argument(E_INVALID_ACTION_TYPE));
         if (setting_type == 1) {
             // restore::set_whitelist manages bribe tokens: only meaningful on
             // inflationary DAOs (static DAOs have no BribeRegistry).

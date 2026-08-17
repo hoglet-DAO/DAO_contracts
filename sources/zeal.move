@@ -22,6 +22,7 @@ module dao_factory::zeal {
     use dao_factory::pilgrim;
     use dao_factory::foundry;
     use dao_factory::sentinel;
+    use dao_factory::charter;
 
     // Errors 
     const E_NOT_AUTHORIZED: u64  = 1;
@@ -38,6 +39,7 @@ module dao_factory::zeal {
     const E_INVALID_EPOCH: u64   = 12;
     const E_INVALID_TOKEN: u64   = 13;
     const E_PAUSED: u64          = 14;
+    const E_NOT_ACTIVE: u64      = 15;
 
     // Structs 
 
@@ -212,6 +214,7 @@ module dao_factory::zeal {
         weights: vector<u64>,
     ) acquires GaugeRegistry {
         assert!(!sentinel::is_paused(dao_address), error::invalid_state(E_PAUSED));
+        assert!(charter::is_active(dao_address), error::invalid_state(E_NOT_ACTIVE));
         assert!(supra_framework::object::is_object(legacy_addr), error::invalid_argument(E_NOT_OBJECT));
         let ve_token_obj = supra_framework::object::address_to_object<legacy::VeToken>(legacy_addr);
         let voter_addr = signer::address_of(voter);

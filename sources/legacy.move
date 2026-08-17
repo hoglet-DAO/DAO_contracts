@@ -180,12 +180,11 @@ module dao_factory::legacy {
         let creator_extend_ref = object::generate_extend_ref(&creator_constructor);
 
         // Premium Names (Example: "Governance of Aerodrome")
-        let collection_name = string::utf8(b"Governance of ");
+        let collection_name = string::utf8(b"Gov. of ");
         string::append(&mut collection_name, dao_name);
 
-        let collection_desc = string::utf8(b"Exclusive voting rights and economic power in the ");
+        let collection_desc = string::utf8(b"Gov rights for ");
         string::append(&mut collection_desc, dao_name);
-        string::append(&mut collection_desc, string::utf8(b" ecosystem."));
 
         let token_symbol = fungible_asset::symbol(token_metadata);
         let token_icon = fungible_asset::icon_uri(token_metadata);
@@ -384,13 +383,25 @@ module dao_factory::legacy {
 
     // Public Functions 
 
+    // --- Helper to reduce Bytecode Bloat ---
+    // Extracted the repetitive setup for `compound_rebase_internal`
+    fun prepare_and_compound(owner: &signer, legacy_addr: address): (address, address) acquires VeToken, VeTokenRegistry {
+        let (owner_addr, legacy) = verify_owner_and_get_legacy(owner, legacy_addr);
+        let obj_addr = legacy_addr;
+        let dao_address = get_dao_address(legacy);
+        
+        {
+            let ve_data = borrow_global_mut<VeToken>(obj_addr);
+            let registry = borrow_global_mut<VeTokenRegistry>(ve_data.dao_address);
+            compound_rebase_internal(owner_addr, obj_addr, ve_data, registry);
+        };
+        (owner_addr, dao_address)
+    }
+
     public entry fun compound(caller: &signer, legacy_addr: address) acquires VeToken, VeTokenRegistry, VeTokenRefs {
-        let (owner_addr, _) = verify_owner_and_get_legacy(caller, legacy_addr);
+        let (owner_addr, _) = prepare_and_compound(caller, legacy_addr);
         let obj_addr = legacy_addr;
         let ve_data = borrow_global_mut<VeToken>(obj_addr);
-        let registry = borrow_global_mut<VeTokenRegistry>(ve_data.dao_address);
-        
-        compound_rebase_internal(owner_addr, obj_addr, ve_data, registry);
         
         let is_delegated = option::is_some(&ve_data.delegate) && *option::borrow(&ve_data.delegate) != owner_addr;
         update_svg_uri(obj_addr, ve_data.dao_address, ve_data.locked_amount, ve_data.end_epoch, is_delegated);
@@ -431,7 +442,7 @@ module dao_factory::legacy {
         registry.mint_count = registry.mint_count + 1;
         let token_name = string::utf8(b"ve");
         string::append(&mut token_name, registry.token_symbol);
-        string::append(&mut token_name, string::utf8(b" Position #"));
+        string::append(&mut token_name, string::utf8(b" #"));
         string::append(&mut token_name, string_utils::to_string(&registry.mint_count));
 
         let creator_signer = object::generate_signer_for_extending(&registry.creator_extend_ref);
@@ -512,19 +523,10 @@ module dao_factory::legacy {
         additional_epochs: u64,
     ) acquires VeToken, VeTokenRegistry, VeTokenRefs {
         assert!(additional_epochs >= 1, error::invalid_argument(E_INVALID_EXTEND));
-        let (owner_addr, legacy) = verify_owner_and_get_legacy(owner, legacy_addr);
-        
-        // Ensure consistent pausable behavior
-        let dao_address = get_dao_address(legacy);
+        let (owner_addr, dao_address) = prepare_and_compound(owner, legacy_addr);
         sentinel::assert_not_paused(dao_address);
 
         let obj_addr = legacy_addr;
-        
-        {
-            let ve_data = borrow_global_mut<VeToken>(obj_addr);
-            let registry = borrow_global_mut<VeTokenRegistry>(ve_data.dao_address);
-            compound_rebase_internal(owner_addr, obj_addr, ve_data, registry);
-        };
 
         let ve_data = borrow_global_mut<VeToken>(obj_addr);
         let current_epoch = pilgrim::now();
@@ -555,19 +557,10 @@ module dao_factory::legacy {
         additional_amount: u64,
     ) acquires VeToken, VeTokenRegistry, VeTokenRefs, TotalLockedHistory {
         assert!(additional_amount > 0, error::invalid_argument(E_ZERO_AMOUNT));
-        let (owner_addr, legacy) = verify_owner_and_get_legacy(owner, legacy_addr);
-
-        // Ensure consistent pausable behavior
-        let dao_address = get_dao_address(legacy);
+        let (owner_addr, dao_address) = prepare_and_compound(owner, legacy_addr);
         sentinel::assert_not_paused(dao_address);
 
         let obj_addr = legacy_addr;
-        
-        {
-            let ve_data = borrow_global_mut<VeToken>(obj_addr);
-            let registry = borrow_global_mut<VeTokenRegistry>(ve_data.dao_address);
-            compound_rebase_internal(owner_addr, obj_addr, ve_data, registry);
-        };
 
         let ve_data = borrow_global_mut<VeToken>(obj_addr);
         let registry = borrow_global_mut<VeTokenRegistry>(ve_data.dao_address);
@@ -602,16 +595,8 @@ module dao_factory::legacy {
         owner: &signer,
         legacy_addr: address,
     ) acquires VeToken, VeTokenRefs, VeTokenRegistry, TotalLockedHistory {
-        let (owner_addr, legacy) = verify_owner_and_get_legacy(owner, legacy_addr);
-
+        let (owner_addr, _) = prepare_and_compound(owner, legacy_addr);
         let obj_addr = legacy_addr;
-        
-        {
-            let ve_data = borrow_global_mut<VeToken>(obj_addr);
-            let registry = borrow_global_mut<VeTokenRegistry>(ve_data.dao_address);
-            compound_rebase_internal(owner_addr, obj_addr, ve_data, registry);
-        };
-
         let current_epoch = pilgrim::now();
         let dao_address;
 
@@ -653,14 +638,12 @@ module dao_factory::legacy {
         from_legacy_addr: address,
         into_legacy_addr: address,
     ) acquires VeToken, VeTokenRefs, VeTokenRegistry, TotalLockedHistory {
-        let owner_addr = signer::address_of(owner);
         assert!(from_legacy_addr != into_legacy_addr, error::invalid_argument(E_INVALID_OBJECT));
         
-        let (_, from_legacy) = verify_owner_and_get_legacy(owner, from_legacy_addr);
-        let (_, _) = verify_owner_and_get_legacy(owner, into_legacy_addr);
+        let (owner_addr, dao_address) = prepare_and_compound(owner, from_legacy_addr);
+        let (_, _) = prepare_and_compound(owner, into_legacy_addr);
 
-        // Get DAO Address and ensure they belong to the same DAO
-        let dao_address;
+        // Ensure they belong to the same DAO & other preconditions
         {
             let from_ve_data = borrow_global<VeToken>(from_legacy_addr);
             let into_ve_data = borrow_global<VeToken>(into_legacy_addr);
@@ -670,24 +653,10 @@ module dao_factory::legacy {
             let current_epoch = pilgrim::now();
             let check_epoch = if (current_epoch > 0) { current_epoch - 1 } else { 0 };
             assert!(from_ve_data.last_voted_epoch < check_epoch, error::invalid_state(E_VOTED_RECENTLY));
-            
-            dao_address = from_ve_data.dao_address;
         };
 
         // Sentinel: merge is pausable
         sentinel::assert_not_paused(dao_address);
-
-        // Compound rebase for BOTH tokens before proceeding
-        {
-            let registry = borrow_global_mut<VeTokenRegistry>(dao_address);
-            let from_ve_data = borrow_global_mut<VeToken>(from_legacy_addr);
-            compound_rebase_internal(owner_addr, from_legacy_addr, from_ve_data, registry);
-        };
-        {
-            let registry = borrow_global_mut<VeTokenRegistry>(dao_address);
-            let into_ve_data = borrow_global_mut<VeToken>(into_legacy_addr);
-            compound_rebase_internal(owner_addr, into_legacy_addr, into_ve_data, registry);
-        };
 
         // Variables to extract from `from_legacy`
         let from_amount: u64;
@@ -980,7 +949,13 @@ module dao_factory::legacy {
     #[view]
     public fun get_delegate(legacy: Object<VeToken>): Option<address> acquires VeToken {
         let obj_addr = object::object_address(&legacy);
-        borrow_global<VeToken>(obj_addr).delegate
+        let ve_token = borrow_global<VeToken>(obj_addr);
+        
+        if (object::owner(legacy) != ve_token.delegator) {
+            option::none()
+        } else {
+            ve_token.delegate
+        }
     }
 
     #[view]
@@ -1013,7 +988,11 @@ module dao_factory::legacy {
                 if (ve_data.dao_address == target_dao) {
                     let locked_amount = ve_data.locked_amount;
                     let end_epoch = ve_data.end_epoch;
-                    let is_delegated = option::is_some(&ve_data.delegate);
+                    let is_delegated = if (object::owner(object::address_to_object<VeToken>(nft_addr)) != ve_data.delegator) {
+                        false
+                    } else {
+                        option::is_some(&ve_data.delegate)
+                    };
                     
                     let epochs_left = if (end_epoch > current_epoch) { end_epoch - current_epoch } else { 0 };
                     let power = (((locked_amount as u128) * (epochs_left as u128) / (MAX_LOCK_EPOCHS as u128)) as u64);

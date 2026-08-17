@@ -9,10 +9,10 @@ module dao_factory::anchor {
     use dao_factory::charter;
     use dao_factory::legacy;
     use dao_factory::sentinel;
-    use dao_factory::pilgrim;
     use dao_factory::foundry;
     use dao_factory::boost_registry;
     use dao_factory::jubilee;
+    use dao_tokens::smart_token;
     use supra_framework::object;
     use supra_framework::coin;
     use supra_framework::supra_coin::SupraCoin;
@@ -59,11 +59,8 @@ module dao_factory::anchor {
     // Anyone can call this function if the proposal meets the conditions.
     public entry fun queue_proposal(_caller: &signer, dao_address: address, proposal_id: u64) {
         let (_, _, end_time, eta, executed, canceled, for_votes, against_votes, abstain_votes) = ledger::get_proposal_details(dao_address, proposal_id);
-        let current_time = timestamp::now_seconds();
         
-        // Voting must have ended and DAO must be active
-        assert!(current_time > end_time, error::invalid_state(E_PROPOSAL_NOT_ACTIVE)); 
-        assert!(charter::is_active(dao_address), error::invalid_state(E_PROPOSAL_NOT_ACTIVE));
+        assert_active_and_ended(dao_address, end_time);
         
         // Cannot queue twice
         assert!(eta == 0, error::invalid_state(E_ALREADY_QUEUED));
@@ -71,14 +68,13 @@ module dao_factory::anchor {
         assert!(!canceled, error::invalid_state(E_ALREADY_CANCELED));
         
         let quorum_required = ledger::get_proposal_quorum(dao_address, proposal_id);
-        
         let total_participation = for_votes + against_votes + abstain_votes;
         
         // Must reach quorum AND have more for votes than against votes
         assert!(total_participation >= quorum_required && for_votes > against_votes, error::invalid_state(E_PROPOSAL_NOT_SUCCEEDED));
         
         let timelock_delay = charter::get_timelock_delay(dao_address);
-        let eta = current_time + timelock_delay;
+        let eta = timestamp::now_seconds() + timelock_delay;
         ledger::set_proposal_eta(dao_address, proposal_id, eta);
         
         event::emit(ProposalQueued { dao_address, proposal_id, eta });
@@ -144,6 +140,9 @@ module dao_factory::anchor {
                 charter::update_config(&dao_signer, config_key, config_value);
             } else if (config_key <= 11) {
                 jubilee::update_config(&dao_signer, (config_key as u64), config_value);
+            } else if (config_key >= 20 && config_key <= 27) {
+                let token_addr = dao_factory::legacy::get_dao_token_address(dao_address);
+                smart_token::update_single_param(token_addr, &dao_signer, config_key - 20, config_value);
             } else { abort error::invalid_argument(E_INVALID_ACTION) };
         } else if (proposal_type == 3) { // Gauge Action
             // Defense in depth: gauges only exist on inflationary DAOs.
@@ -185,6 +184,12 @@ module dao_factory::anchor {
                 assert!(charter::is_inflationary(dao_address), error::invalid_state(E_NOT_INFLATIONARY));
                 let token_metadata = object::address_to_object<supra_framework::fungible_asset::Metadata>(target_address);
                 dao_factory::restore::set_whitelist(&dao_signer, token_metadata, bool_val == 1);
+            } else if (setting_type == 2) { // Smart Token: Update Treasury Address
+                let token_addr = dao_factory::legacy::get_dao_token_address(dao_address);
+                smart_token::update_treasury_address(token_addr, &dao_signer, target_address);
+            } else if (setting_type == 3) { // Smart Token: Update Blacklist
+                let token_addr = dao_factory::legacy::get_dao_token_address(dao_address);
+                smart_token::update_blacklist(token_addr, &dao_signer, target_address, bool_val == 1);
             } else {
                 abort error::invalid_argument(E_INVALID_ACTION)
             };
@@ -200,6 +205,8 @@ module dao_factory::anchor {
             } else {
                 abort error::invalid_argument(E_INVALID_ACTION)
             };
+        } else {
+            abort error::invalid_argument(E_INVALID_PROPOSAL_TYPE)
         };
         
         event::emit(ProposalExecuted { dao_address, proposal_id });
@@ -266,8 +273,7 @@ module dao_factory::anchor {
     public entry fun finalize_proposal(_caller: &signer, dao_address: address, proposal_id: u64) {
         let (_, _, end_time, _, executed, canceled, for_v, against_v, abstain_v) = ledger::get_proposal_details(dao_address, proposal_id);
         
-        // Ensure voting has ended
-        assert!(timestamp::now_seconds() > end_time, error::invalid_state(E_PROPOSAL_NOT_ACTIVE));
+        assert_active_and_ended(dao_address, end_time);
         assert!(!canceled, error::invalid_state(E_ALREADY_CANCELED));
         assert!(!executed, error::invalid_state(E_ALREADY_EXECUTED));
 
@@ -311,6 +317,11 @@ module dao_factory::anchor {
     }
 
     // --- Helpers for Deduplication ---
+
+    fun assert_active_and_ended(dao_address: address, end_time: u64) {
+        assert!(timestamp::now_seconds() > end_time, error::invalid_state(E_PROPOSAL_NOT_ACTIVE));
+        assert!(charter::is_active(dao_address), error::invalid_state(E_PROPOSAL_NOT_ACTIVE));
+    }
 
     fun validate_and_mark_executed(dao_address: address, proposal_id: u64) {
         sentinel::assert_not_paused(dao_address);

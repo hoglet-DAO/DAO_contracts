@@ -629,7 +629,7 @@ module dao_factory::ledger {
     public fun get_proposal_action_module_setting(dao_address: address, proposal_id: u64): (u8, address, vector<u8>, u64) acquires DaoState {
         let state = borrow_global<DaoState>(dao_address);
         let proposal = get_proposal_safe(state, proposal_id);
-        (proposal.action_config_key, proposal.action_target_address, proposal.upgrade_metadata, proposal.action_config_value)
+        (proposal.action_config_key, proposal.action_target_address, *&proposal.upgrade_metadata, proposal.action_config_value)
     }
 
     // Dynamic Quorum (Rolling Average) 

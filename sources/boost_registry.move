@@ -197,6 +197,60 @@ module dao_factory::boost_registry {
         (total_bps, valid_nfts)
     }
 
+    // Computes the capped total boost for a set of NFTs that are already in escrow.
+    // Unlike compute_boost, this does NOT check is_owner (since the gauge custodies them)
+    // and it processes all NFTs to determine which ones to keep and which to return.
+    // Returns (total_bps, kept_nfts, rejected_nfts)
+    public fun compute_escrowed_boost(
+        dao_address: address,
+        nft_addrs: vector<address>,
+    ): (u64, vector<address>, vector<address>) acquires BoostRegistry {
+        let kept_nfts = vector::empty<address>();
+        let rejected_nfts = vector::empty<address>();
+        if (!exists<BoostRegistry>(dao_address)) {
+            // If no registry, all are rejected
+            return (0, vector::empty(), nft_addrs)
+        };
+
+        let registry = borrow_global<BoostRegistry>(dao_address);
+        let total_bps: u64 = 0;
+        let counted_collections = vector::empty<address>();
+
+        let i = 0;
+        let len = vector::length(&nft_addrs);
+        while (i < len) {
+            let nft_addr = *vector::borrow(&nft_addrs, i);
+            i = i + 1;
+
+            if (object::object_exists<token::Token>(nft_addr)) {
+                let token_obj = object::address_to_object<token::Token>(nft_addr);
+                let collection_obj = token::collection_object(token_obj);
+                let collection_addr = object::object_address(&collection_obj);
+
+                let coll_bps = if (smart_table::contains(&registry.collections, collection_addr)) {
+                    *smart_table::borrow(&registry.collections, collection_addr)
+                } else {
+                    0
+                };
+
+                if (coll_bps == 0 || vector::contains(&counted_collections, &collection_addr)) {
+                    vector::push_back(&mut rejected_nfts, nft_addr);
+                } else {
+                    vector::push_back(&mut counted_collections, collection_addr);
+                    vector::push_back(&mut kept_nfts, nft_addr);
+                    total_bps = total_bps + coll_bps;
+                };
+            };
+            // else: NFT burned while escrowed -> silently dropped from evidence.
+        };
+
+        if (total_bps > HARD_MAX_BOOST_CAP_BPS) {
+            total_bps = HARD_MAX_BOOST_CAP_BPS;
+        };
+
+        (total_bps, kept_nfts, rejected_nfts)
+    }
+
     // View Functions
 
     #[view]

@@ -148,29 +148,33 @@ module dao_factory::charter {
         borrow_global<DaoConfig>(dao_address).guardian
     }
 
+    fun assert_bounds(value: u64, min: u64, max: u64, err_code: u64) {
+        assert!(value >= min && value <= max, error::invalid_argument(err_code));
+    }
+
     // Validates a configuration value without modifying state. Used by herald to validate proposals.
     public fun validate_config_value(dao_address: address, config_key: u8, config_value: u64) acquires DaoConfig {
         let config = borrow_global<DaoConfig>(dao_address);
         if (config_key == 0) {
-            assert!(config_value > 0 && config_value <= config.quorum_denominator, error::invalid_argument(E_INVALID_QUORUM));
+            assert_bounds(config_value, 1, config.quorum_denominator, E_INVALID_QUORUM);
             assert!(config_value * 100 / config.quorum_denominator >= 50, error::invalid_argument(E_INVALID_QUORUM)); // At least 50% super quorum
         } else if (config_key == 1) {
-            assert!(config_value > 0 && config_value <= config.quorum_denominator, error::invalid_argument(E_INVALID_QUORUM));
+            assert_bounds(config_value, 1, config.quorum_denominator, E_INVALID_QUORUM);
             assert!(config_value * 100 / config.quorum_denominator >= 1, error::invalid_argument(E_INVALID_QUORUM)); // At least 1% quorum
         } else if (config_key == 2) {
             assert!(config_value >= config.quorum_numerator && config_value >= config.super_quorum_threshold, error::invalid_argument(E_INVALID_QUORUM));
         } else if (config_key == 3) {
-            assert!(config_value <= MAX_DELAY_SECONDS, error::invalid_argument(E_INVALID_DELAY));
+            assert_bounds(config_value, 0, MAX_DELAY_SECONDS, E_INVALID_DELAY);
         } else if (config_key == 4) {
-            assert!(config_value >= MIN_DELAY_SECONDS && config_value <= MAX_DELAY_SECONDS, error::invalid_argument(E_INVALID_DELAY));
+            assert_bounds(config_value, MIN_DELAY_SECONDS, MAX_DELAY_SECONDS, E_INVALID_DELAY);
         } else if (config_key == 5) {
-            assert!(config_value >= MIN_PERIOD_SECONDS && config_value <= MAX_DELAY_SECONDS, error::invalid_argument(E_INVALID_PERIOD));
+            assert_bounds(config_value, MIN_PERIOD_SECONDS, MAX_DELAY_SECONDS, E_INVALID_PERIOD);
         } else if (config_key == 6) {
             assert!(config_value > 0, error::invalid_argument(E_INVALID_THRESHOLD));
         } else if (config_key == 7) {
-            assert!(config_value >= MIN_DELAY_SECONDS && config_value <= MAX_DELAY_SECONDS, error::invalid_argument(E_INVALID_DELAY));
+            assert_bounds(config_value, MIN_DELAY_SECONDS, MAX_DELAY_SECONDS, E_INVALID_DELAY);
         } else if (config_key == 8) {
-            assert!(config_value >= MIN_PERIOD_SECONDS && config_value <= MAX_DELAY_SECONDS, error::invalid_argument(E_INVALID_PERIOD));
+            assert_bounds(config_value, MIN_PERIOD_SECONDS, MAX_DELAY_SECONDS, E_INVALID_PERIOD);
         } else {
             abort error::invalid_argument(E_INVALID_DELAY) // or E_INVALID_CONFIG_KEY
         };
@@ -229,6 +233,7 @@ module dao_factory::charter {
         borrow_global<DaoConfig>(dao_address).is_active
     }
 
+    #[view]
     public fun get_dao_config_view(dao_address: address): (String, u64, u64, u64, u64, u64, u64, u64) acquires DaoConfig {
         let config = borrow_global<DaoConfig>(dao_address);
         (

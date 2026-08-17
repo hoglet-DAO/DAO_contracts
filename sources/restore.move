@@ -162,21 +162,16 @@ module dao_factory::restore {
 
     // Deposits 
 
-    // Deposits tokens to incentivize votes towards a gauge in a future or current epoch.
-    public entry fun deposit_bribe(
-        depositor: &signer,
+    fun process_bribe_deposit(
+        registry: &mut BribeRegistry,
         dao_address: address,
+        depositor_addr: address,
         pilgrim: u64,
         gauge_id: u64,
-        token_metadata_addr: address,
+        token_addr: address,
         amount: u64,
-    ) acquires BribeRegistry {
-        assert!(supra_framework::object::is_object(token_metadata_addr), error::invalid_argument(E_NOT_OBJECT));
-        let token_metadata = supra_framework::object::address_to_object<Metadata>(token_metadata_addr);
-        let depositor_addr = signer::address_of(depositor);
-        let token_addr = object::object_address(&token_metadata);
-        let registry = borrow_global_mut<BribeRegistry>(dao_address);
-        
+        fa: supra_framework::fungible_asset::FungibleAsset
+    ) {
         // FIX (FUND-03): Prevent front-running by only allowing bribes for FUTURE epochs
         assert!(pilgrim > pilgrim::now(), error::invalid_argument(E_INVALID_EPOCH));
         assert!(gauge_id < zeal::get_gauge_count(dao_address), error::invalid_argument(E_INVALID_GAUGE));
@@ -186,8 +181,6 @@ module dao_factory::restore {
             error::invalid_argument(E_NOT_WHITELISTED)
         );
 
-        // Withdraw from the depositor and save in the central bribes vault
-        let fa = primary_fungible_store::withdraw(depositor, token_metadata, amount);
         primary_fungible_store::deposit(registry.vault_address, fa);
 
         let key = BribeKey { pilgrim, gauge_id, token_addr };
@@ -202,6 +195,24 @@ module dao_factory::restore {
         });
     }
 
+    public entry fun deposit_bribe(
+        depositor: &signer,
+        dao_address: address,
+        pilgrim: u64,
+        gauge_id: u64,
+        token_metadata_addr: address,
+        amount: u64,
+    ) acquires BribeRegistry {
+        assert!(supra_framework::object::is_object(token_metadata_addr), error::invalid_argument(E_NOT_OBJECT));
+        let token_metadata = supra_framework::object::address_to_object<Metadata>(token_metadata_addr);
+        let depositor_addr = signer::address_of(depositor);
+        let token_addr = object::object_address(&token_metadata);
+        let registry = borrow_global_mut<BribeRegistry>(dao_address);
+        
+        let fa = primary_fungible_store::withdraw(depositor, token_metadata, amount);
+        process_bribe_deposit(registry, dao_address, depositor_addr, pilgrim, gauge_id, token_addr, amount, fa);
+    }
+
     // Deposits tokens (legacy Coin format) to incentivize votes towards a gauge in a future epoch.
     // This wrapper handles the conversion from Coin to FungibleAsset transparently.
     public entry fun deposit_bribe_coin<CoinType>(
@@ -214,37 +225,12 @@ module dao_factory::restore {
         let depositor_addr = signer::address_of(depositor);
         let registry = borrow_global_mut<BribeRegistry>(dao_address);
         
-        assert!(pilgrim > pilgrim::now(), error::invalid_argument(E_INVALID_EPOCH));
-        assert!(gauge_id < zeal::get_gauge_count(dao_address), error::invalid_argument(E_INVALID_GAUGE));
-        
-        // 1. Withdraw the legacy Coin
         let coin = supra_framework::coin::withdraw<CoinType>(depositor, amount);
-        
-        // 2. Convert Coin to Fungible Asset
         let fa = supra_framework::coin::coin_to_fungible_asset(coin);
-        
-        // 3. Get the Metadata Address of the resulting FA
         let token_metadata = supra_framework::fungible_asset::asset_metadata(&fa);
         let token_addr = object::object_address(&token_metadata);
 
-        assert!(
-            vector::contains(&registry.whitelisted_tokens, &token_addr),
-            error::invalid_argument(E_NOT_WHITELISTED)
-        );
-
-        // Deposit into vault
-        primary_fungible_store::deposit(registry.vault_address, fa);
-
-        let key = BribeKey { pilgrim, gauge_id, token_addr };
-        let current_total = if (smart_table::contains(&registry.total_bribes, key)) {
-            *smart_table::borrow(&registry.total_bribes, key)
-        } else { 0 };
-        
-        smart_table::upsert(&mut registry.total_bribes, key, current_total + amount);
-
-        event::emit(BribeDeposited {
-            dao_address, depositor: depositor_addr, pilgrim, gauge_id, token: token_addr, amount
-        });
+        process_bribe_deposit(registry, dao_address, depositor_addr, pilgrim, gauge_id, token_addr, amount, fa);
     }
 
     // Claims 
