@@ -556,8 +556,8 @@ module dao_factory::ledger {
         if (current_time < proposal.start_time) { return 0u8 }; // Pending
         if (current_time <= proposal.end_time) { return 1u8 }; // Active
         
-        let total_supporting = proposal.for_votes;
-        let quorum_reached = total_supporting >= proposal.quorum_required;
+        let total_participation = proposal.for_votes + proposal.against_votes + proposal.abstain_votes;
+        let quorum_reached = total_participation >= proposal.quorum_required;
 
         if (quorum_reached && proposal.for_votes > proposal.against_votes) {
             4u8 // Succeeded

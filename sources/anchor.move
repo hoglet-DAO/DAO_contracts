@@ -238,7 +238,8 @@ module dao_factory::anchor {
             let ve_token_obj = object::address_to_object<legacy::VeToken>(ve_token_addr);
             if (object::is_owner(ve_token_obj, proposer)) {
                 // Check power at the time the proposal was created to avoid natural time decay griefing
-                legacy::get_voting_power_at(ve_token_obj, start_time)
+                let start_epoch = start_time / 604800; // Convert timestamp to epoch
+                legacy::get_voting_power_at(ve_token_obj, start_epoch)
             } else {
                 0
             }
@@ -289,7 +290,7 @@ module dao_factory::anchor {
         // the regular dynamic quorum, this paved the way to drain the treasury
         // with minimal voting power.
         let quorum_required = ledger::get_proposal_quorum(dao_address, proposal_id);
-        if (for_v > against_v && for_v >= quorum_required) {
+        if (for_v > against_v && total_participation >= quorum_required) {
             ledger::record_participation(dao_address, proposal_id, total_participation);
         } else {
             // Mark it as finalized in the ledger without affecting the moving average quorum

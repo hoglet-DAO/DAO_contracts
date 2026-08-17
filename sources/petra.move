@@ -394,7 +394,7 @@ module dao_factory::petra {
         dao_address
     }
 
-    fun prepare_dao_creation(creator: &signer, governance_token: Object<Metadata>, expected_supply_opt: option::Option<u128>): (signer, account::SignerCapability, address, string::String, u64) {
+    fun prepare_dao_creation(creator: &signer, governance_token: Object<Metadata>, expected_supply_opt: option::Option<u128>): (signer, account::SignerCapability, address, string::String, u128) {
         let governance_token_addr = object::object_address(&governance_token);
         let name = fungible_asset::name(governance_token);
         let symbol = fungible_asset::symbol(governance_token);
@@ -415,7 +415,7 @@ module dao_factory::petra {
         let current_supply = if (option::is_some(&expected_supply_opt)) { *option::borrow(&expected_supply_opt) } else { *option::borrow(&supply_opt) };
         assert!(current_supply > 0, error::invalid_argument(E_SUPPLY_ZERO));
 
-        (dao_signer, signer_cap, dao_address, name, (current_supply as u64)) // u64 for easier threshold math
+        (dao_signer, signer_cap, dao_address, name, current_supply) // keep u128 to prevent truncation
     }
 
     // Shared static-DAO creation flow (used by both the public entry point
@@ -432,7 +432,7 @@ module dao_factory::petra {
     ): address acquires DaoRegistry {
         let (dao_signer, signer_cap, dao_address, name, current_supply) = prepare_dao_creation(creator, governance_token, expected_supply_opt);
 
-        let dynamic_threshold = ((((current_supply as u128) * (config.default_proposal_threshold_ppm as u128)) / 1000000) as u64);
+        let dynamic_threshold = (((current_supply * (config.default_proposal_threshold_ppm as u128)) / 1000000) as u64);
         // SECURITY FIX (VULN-07): tiny supplies round the threshold down to 0,
         // which aborts charter::initialize (E_INVALID_THRESHOLD) and bricks
         // DAO creation for that token. Clamp to a minimum of 1.
@@ -551,13 +551,13 @@ module dao_factory::petra {
         let governance_token_addr = object::object_address(&governance_token);
         let (dao_signer, signer_cap, dao_address, name, current_supply) = prepare_dao_creation(creator, governance_token, expected_supply_opt);
 
-        let dynamic_threshold = ((((current_supply as u128) * (config.default_proposal_threshold_ppm as u128)) / 1000000) as u64);
+        let dynamic_threshold = (((current_supply * (config.default_proposal_threshold_ppm as u128)) / 1000000) as u64);
         // SECURITY FIX (VULN-07): tiny supplies round the threshold down to 0,
         // which aborts charter::initialize (E_INVALID_THRESHOLD) and bricks
         // DAO creation for that token. Clamp to a minimum of 1.
         if (dynamic_threshold == 0) { dynamic_threshold = 1 };
-        let dynamic_initial_emission = ((((current_supply as u128) * (config.default_initial_emission_ppm as u128)) / 1000000) as u64);
-        let dynamic_tail_emission = ((((current_supply as u128) * (config.default_tail_emission_ppm as u128)) / 1000000) as u64);
+        let dynamic_initial_emission = (((current_supply * (config.default_initial_emission_ppm as u128)) / 1000000) as u64);
+        let dynamic_tail_emission = (((current_supply * (config.default_tail_emission_ppm as u128)) / 1000000) as u64);
 
         charter::initialize(
             &dao_signer, name, config.default_voting_delay, config.default_voting_period, dynamic_threshold,

@@ -263,7 +263,7 @@ module dao_factory::foundry {
 
         if (new_bps != current_bps || vector::length(&kept_nfts) != vector::length(&stored_nfts)) {
             // Settle at the OLD working balance before mutating.
-            resync_and_settle(gauge_addr, gauge, account);
+            update_reward(gauge, account);
 
             if (vector::length(&returned_nfts) > 0) {
                 return_escrowed_nfts(gauge, returned_nfts, account);
