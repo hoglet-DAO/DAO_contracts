@@ -153,6 +153,7 @@ module dao_factory::anchor {
                 let dao_token_address = dao_factory::legacy::get_dao_token_address(dao_address);
                 let gauge_address = foundry::create_gauge(&dao_signer, target_address, dao_token_address);
                 dao_factory::zeal::create_gauge(&dao_signer, gauge_address, target_address);
+                smart_token::set_exemption(dao_token_address, &dao_signer, gauge_address, true);
             } else if (action_type == 1) {
                 dao_factory::zeal::set_gauge_status(&dao_signer, gauge_id, false); // Deactivate
             } else if (action_type == 2) {
