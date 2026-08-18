@@ -20,6 +20,7 @@ module dao_factory::jubilee {
     use dao_factory::zeal;
     use dao_factory::charter;
     use dao_factory::sentinel;
+    use dao_factory::math;
 
     // Errors 
     const E_ALREADY_MINTED: u64 = 1;
@@ -127,7 +128,7 @@ module dao_factory::jubilee {
 
             total_minted = total_minted + emission_this_epoch;
             
-            let gauge_this_epoch = (((emission_this_epoch as u128) * (config.gauge_split_bps as u128) / 10000) as u64);
+            let gauge_this_epoch = math::apply_bps(emission_this_epoch, config.gauge_split_bps);
             let rebase_this_epoch = emission_this_epoch - gauge_this_epoch;
 
             total_gauge = total_gauge + gauge_this_epoch;
@@ -140,7 +141,7 @@ module dao_factory::jubilee {
             
             // Calculate decay for the next epoch
             // We use u128 to prevent overflow in multiplication
-            let decay = (((config.weekly_emission as u128) * (config.decay_bps as u128) / 10000) as u64);
+            let decay = math::apply_bps(config.weekly_emission, config.decay_bps);
             let next_emission = if (config.weekly_emission > decay) {
                 config.weekly_emission - decay
             } else {
@@ -234,7 +235,7 @@ module dao_factory::jubilee {
         if (exists<MinterConfig>(dao_address)) {
             let config = borrow_global<MinterConfig>(dao_address);
             let total_emission = config.weekly_emission;
-            (((total_emission as u128) * (config.gauge_split_bps as u128) / 10000) as u64)
+            math::apply_bps(total_emission, config.gauge_split_bps)
         } else {
             0
         }

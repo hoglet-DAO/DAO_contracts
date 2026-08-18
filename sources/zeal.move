@@ -160,6 +160,12 @@ module dao_factory::zeal {
         exists<GaugeRegistry>(dao_address)
     }
 
+    #[view]
+    public fun get_vault_address(dao_address: address): address acquires GaugeRegistry {
+        let registry = borrow_global<GaugeRegistry>(dao_address);
+        registry.vault_address
+    }
+
     // Governance Functions 
 
     // Creates a new Gauge. Typically called through an approved proposal (`anchor`).

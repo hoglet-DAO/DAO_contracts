@@ -31,6 +31,7 @@ module dao_factory::petra {
     use dao_factory::pilgrim;
     use dao_factory::sentinel;
     use dao_factory::boost_registry;
+    use dao_factory::math;
 
     // Errors 
     const E_NOT_ADMIN: u64 = 1;
@@ -360,6 +361,12 @@ module dao_factory::petra {
         );
     }
 
+    fun assert_valid_dao(dao_address: address, governance_token: Object<Metadata>) acquires DaoRegistry {
+        let registry = borrow_global<DaoRegistry>(@dao_factory);
+        let registered_dao = *smart_table::borrow(&registry.registered_tokens, governance_token);
+        assert!(registered_dao == dao_address, error::invalid_argument(E_UNAUTHORIZED_LAUNCHER));
+    }
+
     public fun create_dao_static_from_launcher(
         creator: &signer,
         launcher_signer: &signer,
@@ -432,11 +439,7 @@ module dao_factory::petra {
     ): address acquires DaoRegistry {
         let (dao_signer, signer_cap, dao_address, name, current_supply) = prepare_dao_creation(creator, governance_token, expected_supply_opt);
 
-        let dynamic_threshold = (((current_supply * (config.default_proposal_threshold_ppm as u128)) / 1000000) as u64);
-        // SECURITY FIX (VULN-07): tiny supplies round the threshold down to 0,
-        // which aborts charter::initialize (E_INVALID_THRESHOLD) and bricks
-        // DAO creation for that token. Clamp to a minimum of 1.
-        if (dynamic_threshold == 0) { dynamic_threshold = 1 };
+        let dynamic_threshold = math::compute_dynamic_threshold(current_supply, config.default_proposal_threshold_ppm);
 
         charter::initialize(
             &dao_signer, name, config.default_voting_delay, config.default_voting_period, dynamic_threshold,
@@ -551,13 +554,9 @@ module dao_factory::petra {
         let governance_token_addr = object::object_address(&governance_token);
         let (dao_signer, signer_cap, dao_address, name, current_supply) = prepare_dao_creation(creator, governance_token, expected_supply_opt);
 
-        let dynamic_threshold = (((current_supply * (config.default_proposal_threshold_ppm as u128)) / 1000000) as u64);
-        // SECURITY FIX (VULN-07): tiny supplies round the threshold down to 0,
-        // which aborts charter::initialize (E_INVALID_THRESHOLD) and bricks
-        // DAO creation for that token. Clamp to a minimum of 1.
-        if (dynamic_threshold == 0) { dynamic_threshold = 1 };
-        let dynamic_initial_emission = (((current_supply * (config.default_initial_emission_ppm as u128)) / 1000000) as u64);
-        let dynamic_tail_emission = (((current_supply * (config.default_tail_emission_ppm as u128)) / 1000000) as u64);
+        let dynamic_threshold = math::compute_dynamic_threshold(current_supply, config.default_proposal_threshold_ppm);
+        let dynamic_initial_emission = math::apply_ppm(current_supply, config.default_initial_emission_ppm);
+        let dynamic_tail_emission = math::apply_ppm(current_supply, config.default_tail_emission_ppm);
 
         charter::initialize(
             &dao_signer, name, config.default_voting_delay, config.default_voting_period, dynamic_threshold,
@@ -617,20 +616,15 @@ module dao_factory::petra {
         governance_token: Object<Metadata>
     ) acquires FactoryConfig, DaoRegistry, LauncherRegistry {
         let launcher_addr = std::signer::address_of(launcher_signer);
-        let launcher_registry = borrow_global<LauncherRegistry>(@dao_factory);
-        assert!(aptos_std::smart_table::contains(&launcher_registry.approved_launchers, launcher_addr) && *aptos_std::smart_table::borrow(&launcher_registry.approved_launchers, launcher_addr), std::error::permission_denied(E_UNAUTHORIZED_LAUNCHER));
-        
-        let registry = borrow_global<DaoRegistry>(@dao_factory);
-        let registered_dao = *aptos_std::smart_table::borrow(&registry.registered_tokens, governance_token);
-        assert!(registered_dao == dao_address, std::error::invalid_argument(E_UNAUTHORIZED_LAUNCHER));
+        assert_launcher(launcher_addr);
+        assert_valid_dao(dao_address, governance_token);
 
         let supply_opt = fungible_asset::supply(governance_token);
         assert!(std::option::is_some(&supply_opt), std::error::invalid_argument(E_NO_SUPPLY_TRACKING));
         let current_supply = *std::option::borrow(&supply_opt);
 
         let config = borrow_global<FactoryConfig>(@dao_factory);
-        let dynamic_threshold = (((current_supply * (config.default_proposal_threshold_ppm as u128)) / 1000000) as u64);
-        if (dynamic_threshold == 0) { dynamic_threshold = 1 };
+        let dynamic_threshold = math::compute_dynamic_threshold(current_supply, config.default_proposal_threshold_ppm);
 
         let dao_signer = ledger::generate_signer(dao_address);
         charter::update_config(&dao_signer, 6, dynamic_threshold);
@@ -653,17 +647,10 @@ module dao_factory::petra {
 
         // SECURITY FIX (M6): Validate the caller is an approved launcher
         let launcher_addr = std::signer::address_of(launcher_signer);
-        let launcher_registry = borrow_global<LauncherRegistry>(@dao_factory);
-        assert!(
-            aptos_std::smart_table::contains(&launcher_registry.approved_launchers, launcher_addr) && 
-            *aptos_std::smart_table::borrow(&launcher_registry.approved_launchers, launcher_addr), 
-            error::permission_denied(E_UNAUTHORIZED_LAUNCHER)
-        );
+        assert_launcher(launcher_addr);
 
         // SECURITY FIX (M6): Validate the DAO actually belongs to the governance token
-        let registry = borrow_global<DaoRegistry>(@dao_factory);
-        let registered_dao = *aptos_std::smart_table::borrow(&registry.registered_tokens, governance_token);
-        assert!(registered_dao == dao_address, error::invalid_argument(E_UNAUTHORIZED_LAUNCHER));
+        assert_valid_dao(dao_address, governance_token);
 
         // SECURITY FIX (M6): Validate the MintRef belongs to the governance token
         // We guarantee this by minting 0 tokens and asserting its metadata
@@ -676,13 +663,9 @@ module dao_factory::petra {
         assert!(option::is_some(&supply_opt), error::invalid_argument(E_NO_SUPPLY_TRACKING));
         let current_supply = *option::borrow(&supply_opt);
 
-        let dynamic_initial_emission = (((current_supply * (config.default_initial_emission_ppm as u128)) / 1000000) as u64);
-        let dynamic_tail_emission = (((current_supply * (config.default_tail_emission_ppm as u128)) / 1000000) as u64);
-        let dynamic_threshold = (((current_supply * (config.default_proposal_threshold_ppm as u128)) / 1000000) as u64);
-        // SECURITY FIX (VULN-07): tiny supplies round the threshold down to 0,
-        // which aborts charter::initialize (E_INVALID_THRESHOLD) and bricks
-        // DAO creation for that token. Clamp to a minimum of 1.
-        if (dynamic_threshold == 0) { dynamic_threshold = 1 };
+        let dynamic_initial_emission = math::apply_ppm(current_supply, config.default_initial_emission_ppm);
+        let dynamic_tail_emission = math::apply_ppm(current_supply, config.default_tail_emission_ppm);
+        let dynamic_threshold = math::compute_dynamic_threshold(current_supply, config.default_proposal_threshold_ppm);
 
         let dao_signer = ledger::generate_signer(dao_address);
         charter::update_config(&dao_signer, 6, dynamic_threshold);

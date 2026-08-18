@@ -33,7 +33,7 @@ module dao_factory::legacy {
     use dao_factory::sentinel;
     use dao_factory::harvest;
     use dao_factory::ledger;
-    
+    use dao_factory::math;
 
     // Errors 
     const E_ZERO_AMOUNT: u64        = 1;
@@ -320,12 +320,12 @@ module dao_factory::legacy {
         // as a liquid savings account that steals rebase from active lockers.
         let current_epoch = pilgrim::now();
         if (ve_data.end_epoch <= current_epoch) {
-            ve_data.rebase_debt = (((ve_data.locked_amount as u256) * (registry.acc_rebase_per_share as u256) / PRECISION) as u128);
+            ve_data.rebase_debt = math::calculate_rebase_debt(ve_data.locked_amount, registry.acc_rebase_per_share);
             harvest::checkpoint(ve_data.dao_address, obj_addr, ve_data.locked_amount);
             return
         };
 
-        let earned_u128 = (((ve_data.locked_amount as u256) * (registry.acc_rebase_per_share as u256) / PRECISION) as u128);
+        let earned_u128 = math::calculate_rebase_debt(ve_data.locked_amount, registry.acc_rebase_per_share);
         let pending_u128 = if (earned_u128 > ve_data.rebase_debt) { earned_u128 - ve_data.rebase_debt } else { 0 };
         let pending = (pending_u128 as u64);
 
@@ -344,7 +344,7 @@ module dao_factory::legacy {
             event::emit(RebaseCompounded { legacy: obj_addr, amount: pending });
         };
 
-        ve_data.rebase_debt = (((ve_data.locked_amount as u256) * (registry.acc_rebase_per_share as u256) / PRECISION) as u128);
+        ve_data.rebase_debt = math::calculate_rebase_debt(ve_data.locked_amount, registry.acc_rebase_per_share);
 
         // Checkpoint harvest rewards AFTER changing locked_amount
         harvest::checkpoint(ve_data.dao_address, obj_addr, ve_data.locked_amount);
@@ -375,6 +375,12 @@ module dao_factory::legacy {
         token::set_uri(&refs.mutator_ref, new_uri);
     }
 
+    fun refresh_svg(obj_addr: address, ve_data: &VeToken, owner_addr: address) acquires VeTokenRefs, VeTokenRegistry {
+        let is_delegated = option::is_some(&ve_data.delegate) && *option::borrow(&ve_data.delegate) != owner_addr;
+        update_svg_uri(obj_addr, ve_data.dao_address, ve_data.locked_amount, ve_data.end_epoch, is_delegated);
+    }
+
+
     public(friend) fun update_base_uri(dao_signer: &signer, new_uri: String) acquires VeTokenRegistry {
         let dao_address = signer::address_of(dao_signer);
         let registry = borrow_global_mut<VeTokenRegistry>(dao_address);
@@ -403,8 +409,7 @@ module dao_factory::legacy {
         let obj_addr = legacy_addr;
         let ve_data = borrow_global_mut<VeToken>(obj_addr);
         
-        let is_delegated = option::is_some(&ve_data.delegate) && *option::borrow(&ve_data.delegate) != owner_addr;
-        update_svg_uri(obj_addr, ve_data.dao_address, ve_data.locked_amount, ve_data.end_epoch, is_delegated);
+        refresh_svg(obj_addr, ve_data, owner_addr);
     }
 
     /// Entry point for Frontend/Wallets to create a lock. 
@@ -479,7 +484,7 @@ module dao_factory::legacy {
             end_epoch,
         });
 
-        let initial_debt = (((amount as u256) * (registry.acc_rebase_per_share as u256) / PRECISION) as u128);
+        let initial_debt = math::calculate_rebase_debt(amount, registry.acc_rebase_per_share);
 
         move_to(&obj_signer, VeToken {
             dao_address,
@@ -545,8 +550,7 @@ module dao_factory::legacy {
         upsert_snapshot(ve_data);
 
         // Update SVG to reflect the new lock time
-        let is_delegated = option::is_some(&ve_data.delegate) && *option::borrow(&ve_data.delegate) != owner_addr;
-        update_svg_uri(obj_addr, ve_data.dao_address, ve_data.locked_amount, new_end_epoch, is_delegated);
+        refresh_svg(obj_addr, ve_data, owner_addr);
 
         event::emit(LockExtended { owner: owner_addr, legacy: obj_addr, old_end_epoch, new_end_epoch });
     }
@@ -577,7 +581,7 @@ module dao_factory::legacy {
         registry.total_locked = registry.total_locked + additional_amount;
         update_total_locked_history(ve_data.dao_address, registry.total_locked);
 
-        ve_data.rebase_debt = (((new_total as u256) * (registry.acc_rebase_per_share as u256) / PRECISION) as u128);
+        ve_data.rebase_debt = math::calculate_rebase_debt(new_total, registry.acc_rebase_per_share);
 
         // Checkpoint for rewards (Must be called AFTER updating amount)
         harvest::checkpoint(ve_data.dao_address, obj_addr, new_total);
@@ -585,8 +589,7 @@ module dao_factory::legacy {
         upsert_snapshot(ve_data);
 
         // Update SVG to reflect the new amount
-        let is_delegated = option::is_some(&ve_data.delegate) && *option::borrow(&ve_data.delegate) != owner_addr;
-        update_svg_uri(obj_addr, ve_data.dao_address, new_total, ve_data.end_epoch, is_delegated);
+        refresh_svg(obj_addr, ve_data, owner_addr);
 
         event::emit(AmountIncreased { owner: owner_addr, legacy: obj_addr, added_amount: additional_amount, new_total });
     }
@@ -706,7 +709,7 @@ module dao_factory::legacy {
         // 3. Update `into_legacy` metadata
         let new_total: u64;
         let new_end_epoch: u64;
-        let is_delegated: bool;
+
         {
             let into_ve_data = borrow_global_mut<VeToken>(into_legacy_addr);
             
@@ -731,12 +734,10 @@ module dao_factory::legacy {
             let registry = borrow_global_mut<VeTokenRegistry>(dao_address);
             registry.total_locked = registry.total_locked; // Just keeping track
             update_total_locked_history(dao_address, registry.total_locked);
-            into_ve_data.rebase_debt = (((new_total as u256) * (registry.acc_rebase_per_share as u256) / PRECISION) as u128);
+            into_ve_data.rebase_debt = math::calculate_rebase_debt(new_total, registry.acc_rebase_per_share);
 
             // Correctly update snapshots
             upsert_snapshot(into_ve_data);
-
-            is_delegated = option::is_some(&into_ve_data.delegate) && *option::borrow(&into_ve_data.delegate) != owner_addr;
         };
 
         // Checkpoints
@@ -744,7 +745,7 @@ module dao_factory::legacy {
         harvest::checkpoint(dao_address, into_legacy_addr, new_total);
 
         // Update SVG
-        update_svg_uri(into_legacy_addr, dao_address, new_total, new_end_epoch, is_delegated);
+        refresh_svg(into_legacy_addr, borrow_global<VeToken>(into_legacy_addr), owner_addr);
 
         event::emit(LockMerged { owner: owner_addr, from_legacy: from_legacy_addr, into_legacy: into_legacy_addr, amount_merged: from_amount, new_total, new_end_epoch });
     }
@@ -944,6 +945,12 @@ module dao_factory::legacy {
     public fun get_dao_token_address(dao_address: address): address acquires VeTokenRegistry {
         if (!exists<VeTokenRegistry>(dao_address)) return @0x0;
         object::object_address(&borrow_global<VeTokenRegistry>(dao_address).token_metadata)
+    }
+
+    #[view]
+    public fun get_rebase_store_address(dao_address: address): address acquires VeTokenRegistry {
+        let registry = borrow_global<VeTokenRegistry>(dao_address);
+        object::object_address(&registry.rebase_store)
     }
 
     #[view]

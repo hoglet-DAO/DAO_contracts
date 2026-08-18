@@ -308,6 +308,12 @@ module dao_factory::restore {
     }
 
     #[view]
+    public fun get_vault_address(dao_address: address): address acquires BribeRegistry {
+        let registry = borrow_global<BribeRegistry>(dao_address);
+        registry.vault_address
+    }
+
+    #[view]
     public fun get_total_bribes_for(
         dao_address: address,
         pilgrim: u64,
