@@ -12,6 +12,7 @@ module dao_factory::restore {
     use std::vector;
     use supra_framework::fungible_asset::{Self, Metadata};
     use supra_framework::primary_fungible_store;
+    use supra_framework::dispatchable_fungible_asset;
     use supra_framework::object::{Self, Object, ExtendRef};
     use supra_framework::event;
     use aptos_std::smart_table::{Self, SmartTable};
@@ -21,6 +22,7 @@ module dao_factory::restore {
     use dao_factory::zeal;
     use dao_factory::legacy;
     use dao_factory::sentinel;
+    use dao_factory::table;
 
     // Errors 
     const E_NOT_WHITELISTED: u64 = 1;
@@ -184,10 +186,8 @@ module dao_factory::restore {
         primary_fungible_store::deposit(registry.vault_address, fa);
 
         let key = BribeKey { pilgrim, gauge_id, token_addr };
-        let current_total = if (smart_table::contains(&registry.total_bribes, key)) {
-            *smart_table::borrow(&registry.total_bribes, key)
-        } else { 0 };
-        
+        let current_total = table::u64_or_zero(&registry.total_bribes, key);
+
         smart_table::upsert(&mut registry.total_bribes, key, current_total + amount);
 
         event::emit(BribeDeposited {
@@ -283,7 +283,7 @@ module dao_factory::restore {
         if (share > 0) {
             let vault_signer = object::generate_signer_for_extending(&registry.vault_extend_ref);
             let vault_store = primary_fungible_store::primary_store(registry.vault_address, token_metadata);
-            let fa = fungible_asset::withdraw(&vault_signer, vault_store, share);
+            let fa = dispatchable_fungible_asset::withdraw(&vault_signer, vault_store, share);
             primary_fungible_store::deposit(claimer_addr, fa);
 
             event::emit(BribeClaimed {
@@ -323,8 +323,7 @@ module dao_factory::restore {
         if (!exists<BribeRegistry>(dao_address)) return 0;
         let registry = borrow_global<BribeRegistry>(dao_address);
         let key = BribeKey { pilgrim, gauge_id, token_addr };
-        if (!smart_table::contains(&registry.total_bribes, key)) return 0;
-        *smart_table::borrow(&registry.total_bribes, key)
+        table::u64_or_zero(&registry.total_bribes, key)
     }
 
     #[view]
@@ -362,9 +361,8 @@ module dao_factory::restore {
         
         let past_key = BribeKey { pilgrim: past_pilgrim, gauge_id, token_addr };
         let registry = borrow_global_mut<BribeRegistry>(dao_address);
-        
-        if (!smart_table::contains(&registry.total_bribes, past_key)) return;
-        let amount = *smart_table::borrow(&registry.total_bribes, past_key);
+
+        let amount = table::u64_or_zero(&registry.total_bribes, past_key);
         if (amount == 0) return;
 
         // Zero out the past epoch
@@ -373,10 +371,8 @@ module dao_factory::restore {
         // Move to the next available voting epoch (now + 1)
         let target_pilgrim = pilgrim::now() + 1;
         let target_key = BribeKey { pilgrim: target_pilgrim, gauge_id, token_addr };
-        
-        let current_target_total = if (smart_table::contains(&registry.total_bribes, target_key)) {
-            *smart_table::borrow(&registry.total_bribes, target_key)
-        } else { 0 };
+
+        let current_target_total = table::u64_or_zero(&registry.total_bribes, target_key);
 
         smart_table::upsert(&mut registry.total_bribes, target_key, current_target_total + amount);
 

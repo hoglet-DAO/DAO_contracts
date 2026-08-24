@@ -17,6 +17,7 @@ module dao_factory::foundry {
     use aptos_token_objects::token;
     use dao_factory::pilgrim;
     use dao_factory::boost_registry;
+    use dao_factory::table;
 
     // Errors
     const E_ZERO_AMOUNT: u64 = 2;
@@ -177,13 +178,8 @@ module dao_factory::foundry {
         if (account != @0x0) {
             let balance = get_working_balance(gauge, account);
 
-            let user_paid = if (smart_table::contains(&gauge.user_reward_per_token_paid, account)) {
-                *smart_table::borrow(&gauge.user_reward_per_token_paid, account)
-            } else { 0 };
-
-            let current_reward = if (smart_table::contains(&gauge.rewards, account)) {
-                *smart_table::borrow(&gauge.rewards, account)
-            } else { 0 };
+            let user_paid = table::u128_or_zero(&gauge.user_reward_per_token_paid, account);
+            let current_reward = table::u128_or_zero(&gauge.rewards, account);
 
             let earned = math128::mul_div(balance, gauge.reward_per_token_stored - user_paid, REWARD_SCALE);
             smart_table::upsert(&mut gauge.rewards, account, current_reward + earned);
@@ -196,15 +192,11 @@ module dao_factory::foundry {
     // =========================================================================
 
     fun get_actual_balance(gauge: &Gauge, account: address): u128 {
-        if (smart_table::contains(&gauge.balances, account)) {
-            *smart_table::borrow(&gauge.balances, account)
-        } else { 0 }
+        table::u128_or_zero(&gauge.balances, account)
     }
 
     fun get_working_balance(gauge: &Gauge, account: address): u128 {
-        if (smart_table::contains(&gauge.working_balances, account)) {
-            *smart_table::borrow(&gauge.working_balances, account)
-        } else { 0 }
+        table::u128_or_zero(&gauge.working_balances, account)
     }
 
     fun get_stored_boost_bps(gauge: &Gauge, account: address): u64 {
@@ -324,9 +316,7 @@ module dao_factory::foundry {
 
         resync_and_settle(gauge_addr, gauge, user_addr);
 
-        let reward = if (smart_table::contains(&gauge.rewards, user_addr)) {
-            *smart_table::borrow(&gauge.rewards, user_addr)
-        } else { 0 };
+        let reward = table::u128_or_zero(&gauge.rewards, user_addr);
 
         if (reward > 0) {
             let claimable = if (reward > MAX_U64) { MAX_U64 } else { reward };
@@ -455,12 +445,7 @@ module dao_factory::foundry {
     #[view]
     public fun balance_of(gauge_addr: address, account: address): u128 acquires Gauge {
         if (!exists<Gauge>(gauge_addr)) return 0;
-        let gauge = borrow_global<Gauge>(gauge_addr);
-        if (smart_table::contains(&gauge.balances, account)) {
-            *smart_table::borrow(&gauge.balances, account)
-        } else {
-            0
-        }
+        table::u128_or_zero(&borrow_global<Gauge>(gauge_addr).balances, account)
     }
 
     #[view]
@@ -472,13 +457,8 @@ module dao_factory::foundry {
 
         let balance = get_working_balance(gauge, account);
 
-        let user_paid = if (smart_table::contains(&gauge.user_reward_per_token_paid, account)) {
-            *smart_table::borrow(&gauge.user_reward_per_token_paid, account)
-        } else { 0 };
-
-        let current_reward = if (smart_table::contains(&gauge.rewards, account)) {
-            *smart_table::borrow(&gauge.rewards, account)
-        } else { 0 };
+        let user_paid = table::u128_or_zero(&gauge.user_reward_per_token_paid, account);
+        let current_reward = table::u128_or_zero(&gauge.rewards, account);
 
         let newly_earned = math128::mul_div(balance, current_reward_per_token_stored - user_paid, REWARD_SCALE);
         (current_reward + newly_earned as u64)
@@ -533,6 +513,11 @@ module dao_factory::foundry {
         } else {
             vector::empty()
         }
+    }
+
+    #[view]
+    public fun staking_token(gauge_addr: address): address acquires Gauge {
+        object::object_address(&borrow_global<Gauge>(gauge_addr).staking_token)
     }
 
     // --- Helpers for Deduplication ---

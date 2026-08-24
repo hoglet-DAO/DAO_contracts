@@ -22,6 +22,7 @@ module dao_factory::legacy {
     };
     use supra_framework::object::{Self, Object, ExtendRef, DeleteRef};
     use supra_framework::primary_fungible_store;
+    use supra_framework::dispatchable_fungible_asset;
     use supra_framework::event;
     use aptos_std::smart_vector::{Self, SmartVector};
     use aptos_std::string_utils;
@@ -226,7 +227,7 @@ module dao_factory::legacy {
         if (registry.total_locked > 0 && amount > 0) {
             registry.acc_rebase_per_share = registry.acc_rebase_per_share
                 + (((amount as u256) * PRECISION / (registry.total_locked as u256)) as u128);
-            fungible_asset::deposit(registry.rebase_store, rebase_fa);
+            dispatchable_fungible_asset::deposit(registry.rebase_store, rebase_fa);
         } else {
             // SECURITY FIX (VULN-06): When no one is locking, rebase tokens
             // deposited into rebase_store would be stranded forever (the
@@ -331,10 +332,10 @@ module dao_factory::legacy {
 
         if (pending > 0) {
             let dao_signer = ledger::generate_signer(ve_data.dao_address);
-            let fa = fungible_asset::withdraw(&dao_signer, registry.rebase_store, pending);
+            let fa = dispatchable_fungible_asset::withdraw(&dao_signer, registry.rebase_store, pending);
             
             let store = object::address_to_object<FungibleStore>(obj_addr);
-            fungible_asset::deposit(store, fa);
+            dispatchable_fungible_asset::deposit(store, fa);
 
             ve_data.locked_amount = ve_data.locked_amount + pending;
             registry.total_locked = registry.total_locked + pending;
@@ -475,7 +476,7 @@ module dao_factory::legacy {
 
         // Deposit into the Object's store.
         let store_constructor = fungible_asset::create_store(&constructor_ref, registry.token_metadata);
-        fungible_asset::deposit(store_constructor, fa);
+        dispatchable_fungible_asset::deposit(store_constructor, fa);
 
         let snapshots = smart_vector::new<Snapshot>();
         smart_vector::push_back(&mut snapshots, Snapshot {
@@ -574,7 +575,7 @@ module dao_factory::legacy {
 
         let fa = primary_fungible_store::withdraw(owner, ve_data.token_metadata, additional_amount);
         let store = object::address_to_object<FungibleStore>(obj_addr);
-        fungible_asset::deposit(store, fa);
+        dispatchable_fungible_asset::deposit(store, fa);
 
         let new_total = ve_data.locked_amount + additional_amount;
         ve_data.locked_amount = new_total;
@@ -594,6 +595,30 @@ module dao_factory::legacy {
         event::emit(AmountIncreased { owner: owner_addr, legacy: obj_addr, added_amount: additional_amount, new_total });
     }
 
+    // Shared VeToken destruction used by `withdraw` and `merge`: removes the
+    // VeToken and VeTokenRefs resources, destroys snapshots, drains the FA
+    // store and deletes the object. Returns (locked_amount, end_epoch,
+    // delegate, delegator, withdrawn_fa).
+    fun burn_ve_token_and_withdraw(obj_addr: address): (u64, u64, Option<address>, address, FungibleAsset) acquires VeToken, VeTokenRefs {
+        let VeToken { dao_address: _, locked_amount, end_epoch, snapshots, rebase_debt: _, token_metadata: _, delegate, delegator, last_voted_epoch: _ } =
+            move_from<VeToken>(obj_addr);
+
+        destroy_snapshots(snapshots);
+
+        let VeTokenRefs { extend_ref, delete_ref, mutator_ref: _ } =
+            move_from<VeTokenRefs>(obj_addr);
+
+        let obj_signer = object::generate_signer_for_extending(&extend_ref);
+        let store = object::address_to_object<FungibleStore>(obj_addr);
+
+        let fa = dispatchable_fungible_asset::withdraw(&obj_signer, store, locked_amount);
+
+        fungible_asset::remove_store(&delete_ref);
+        object::delete(delete_ref);
+
+        (locked_amount, end_epoch, delegate, delegator, fa)
+    }
+
     public entry fun withdraw(
         owner: &signer,
         legacy_addr: address,
@@ -609,26 +634,13 @@ module dao_factory::legacy {
             dao_address = ve_data.dao_address;
         };
 
-        let VeToken { dao_address: _, locked_amount, end_epoch: _, snapshots, rebase_debt: _, token_metadata: _, delegate: _, delegator: _, last_voted_epoch: _ } =
-            move_from<VeToken>(obj_addr);
+        let (locked_amount, _, _, _, fa) = burn_ve_token_and_withdraw(obj_addr);
 
         let registry = borrow_global_mut<VeTokenRegistry>(dao_address);
         registry.total_locked = registry.total_locked - locked_amount;
         update_total_locked_history(dao_address, registry.total_locked);
 
-        destroy_snapshots(snapshots);
-
-        let VeTokenRefs { extend_ref, delete_ref, mutator_ref: _ } =
-            move_from<VeTokenRefs>(obj_addr);
-
-        let obj_signer = object::generate_signer_for_extending(&extend_ref);
-        let store = object::address_to_object<FungibleStore>(obj_addr);
-        
-        let fa = fungible_asset::withdraw(&obj_signer, store, locked_amount);
         primary_fungible_store::deposit(owner_addr, fa);
-
-        fungible_asset::remove_store(&delete_ref);
-        object::delete(delete_ref);
 
         // Checkpoint for rewards (0 because everything was withdrawn)
         harvest::checkpoint(dao_address, obj_addr, 0);
@@ -661,37 +673,9 @@ module dao_factory::legacy {
         // Sentinel: merge is pausable
         sentinel::assert_not_paused(dao_address);
 
-        // Variables to extract from `from_legacy`
-        let from_amount: u64;
-        let from_end_epoch: u64;
-        let old_delegate: Option<address>;
-        let old_delegator: address;
-        
-        // 1. Move out VeToken and VeTokenRefs from `from_legacy`
-        {
-            let VeToken { dao_address: _, locked_amount, end_epoch, snapshots, rebase_debt: _, token_metadata: _, delegate, delegator, last_voted_epoch: _ } =
-                move_from<VeToken>(from_legacy_addr);
-            
-            from_amount = locked_amount;
-            from_end_epoch = end_epoch;
-            old_delegate = delegate;
-            old_delegator = delegator;
-
-            destroy_snapshots(snapshots);
-        };
-
-        let VeTokenRefs { extend_ref, delete_ref, mutator_ref: _ } =
-            move_from<VeTokenRefs>(from_legacy_addr);
-
-        let from_obj_signer = object::generate_signer_for_extending(&extend_ref);
-        let from_store = object::address_to_object<FungibleStore>(from_legacy_addr);
-        
-        // Withdraw FA from the old token
-        let fa = fungible_asset::withdraw(&from_obj_signer, from_store, from_amount);
-
-        // Delete the old token object
-        fungible_asset::remove_store(&delete_ref);
-        object::delete(delete_ref);
+        // 1. Burn `from_legacy` and drain its FA (shared with withdraw)
+        let (from_amount, from_end_epoch, old_delegate, old_delegator, fa) =
+            burn_ve_token_and_withdraw(from_legacy_addr);
 
         if (option::is_some(&old_delegate)) {
             event::emit(DelegateChanged {
@@ -704,7 +688,7 @@ module dao_factory::legacy {
 
         // 2. Deposit FA into the `into_legacy` store
         let into_store = object::address_to_object<FungibleStore>(into_legacy_addr);
-        fungible_asset::deposit(into_store, fa);
+        dispatchable_fungible_asset::deposit(into_store, fa);
 
         // 3. Update `into_legacy` metadata
         let new_total: u64;

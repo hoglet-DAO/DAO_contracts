@@ -134,6 +134,14 @@ module dao_factory::charter {
         });
     }
 
+    // The launcher that created this DAO (@0x0 for DAOs created directly,
+    // without a launcher). Used by petra to validate launcher-scoped actions.
+    #[view]
+    public fun get_launcher_address(dao_address: address): address acquires DaoConfig {
+        if (!exists<DaoConfig>(dao_address)) return @0x0;
+        borrow_global<DaoConfig>(dao_address).launcher_address
+    }
+
     // Function to increment the proposal ID (Extension: GovernorSequentialProposalId)
     public(friend) fun increment_proposal_count(dao_address: address): u64 acquires DaoConfig {
         let config = borrow_global_mut<DaoConfig>(dao_address);

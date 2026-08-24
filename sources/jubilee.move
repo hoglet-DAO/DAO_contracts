@@ -123,7 +123,7 @@ module dao_factory::jubilee {
             // permanente of u64 (18.44e18) if the weekly emission is high.
             // If the next epoch would cause an overflow, we stop the iteration.
             if ((18446744073709551615u64 - total_minted) < emission_this_epoch) {
-                break;
+                break
             };
 
             total_minted = total_minted + emission_this_epoch;

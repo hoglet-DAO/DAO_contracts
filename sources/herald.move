@@ -469,7 +469,7 @@ module dao_factory::herald {
         string_value: String,
         bool_value: bool,
     ) acquires HeraldState {
-        assert!(setting_type <= 3, error::invalid_argument(E_INVALID_ACTION_TYPE));
+        assert!(setting_type <= 4, error::invalid_argument(E_INVALID_ACTION_TYPE));
         if (setting_type == 1) {
             // restore::set_whitelist manages bribe tokens: only meaningful on
             // inflationary DAOs (static DAOs have no BribeRegistry).

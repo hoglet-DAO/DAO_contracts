@@ -23,6 +23,7 @@ module dao_factory::zeal {
     use dao_factory::foundry;
     use dao_factory::sentinel;
     use dao_factory::charter;
+    use dao_factory::table;
 
     // Errors 
     const E_NOT_AUTHORIZED: u64  = 1;
@@ -40,6 +41,8 @@ module dao_factory::zeal {
     const E_INVALID_TOKEN: u64   = 13;
     const E_PAUSED: u64          = 14;
     const E_NOT_ACTIVE: u64      = 15;
+    // Sentinel returned by find_gauge_by_staking_token when no gauge matches.
+    const GAUGE_NOT_FOUND: u64 = 0xFFFFFFFFFFFFFFFF;
 
     // Structs 
 
@@ -150,7 +153,7 @@ module dao_factory::zeal {
         while (i < len) {
             let staking_token_addr = *std::vector::borrow(&staking_tokens, i);
             let gauge_address = foundry::create_gauge(dao_signer, staking_token_addr, dao_token_address);
-            create_gauge(dao_signer, gauge_address, staking_token_addr);
+            create_gauge(dao_signer, gauge_address, staking_token_addr, false);
             i = i + 1;
         };
     }
@@ -168,19 +171,25 @@ module dao_factory::zeal {
 
     // Governance Functions 
 
-    // Creates a new Gauge. Typically called through an approved proposal (`anchor`).
+    // Creates a new Gauge. Governance-added gauges (anchor) pass
+    // is_active = true; birth gauges (initialize) pass false: at deploy
+    // time it is not yet known which pool will receive seed liquidity
+    // (decided at migration, based on iSUPRA buffer stock). An inactive
+    // gauge cannot receive votes, so it cannot capture emissions while
+    // its pool is empty.
     public(friend) fun create_gauge(
         dao_signer: &signer,
         destination: address,
         staking_token_addr: address,
+        is_active: bool,
     ): u64 acquires GaugeRegistry {
         let dao_address = signer::address_of(dao_signer);
         let registry = borrow_global_mut<GaugeRegistry>(dao_address);
-        
+
         let gauge_id = registry.next_gauge_id;
         smart_table::add(&mut registry.gauges, gauge_id, Gauge {
             destination,
-            is_active: true,
+            is_active,
         });
         registry.next_gauge_id = gauge_id + 1;
 
@@ -206,6 +215,30 @@ module dao_factory::zeal {
             gauge_id,
             is_active,
         });
+    }
+
+    // Activates the gauge whose staking token (LP/pool address) is
+    // `staking_token_addr`. Called by petra on behalf of the LAUNCHER at
+    // migration time to activate exactly the pool that received the seed
+    // liquidity; every other gauge keeps its current (birth-inactive) status.
+    // Returns the activated gauge_id.
+    public(friend) fun activate_gauge_by_staking_token(
+        dao_address: address,
+        staking_token_addr: address,
+    ): u64 acquires GaugeRegistry {
+        let gauge_id = find_gauge_by_staking_token(dao_address, staking_token_addr);
+        assert!(gauge_id != GAUGE_NOT_FOUND, error::invalid_argument(E_INVALID_GAUGE));
+
+        let registry = borrow_global_mut<GaugeRegistry>(dao_address);
+        let gauge = smart_table::borrow_mut(&mut registry.gauges, gauge_id);
+        gauge.is_active = true;
+
+        event::emit(GaugeStatusChanged {
+            dao_address,
+            gauge_id,
+            is_active: true,
+        });
+        gauge_id
     }
 
     // Core Functions 
@@ -285,10 +318,8 @@ module dao_factory::zeal {
             
             vector::push_back(&mut user_powers, allocated_power);
 
-            let current_votes = if (smart_table::contains(gauge_votes_table, gid)) {
-                *smart_table::borrow(gauge_votes_table, gid)
-            } else { 0 };
-            
+            let current_votes = table::u128_or_zero(gauge_votes_table, gid);
+
             smart_table::upsert(gauge_votes_table, gid, current_votes + allocated_power);
             i = i + 1;
         };
@@ -300,9 +331,7 @@ module dao_factory::zeal {
         });
 
         // Add to the global total of the epoch
-        let current_total = if (smart_table::contains(&registry.epoch_total_votes, current_epoch)) {
-            *smart_table::borrow(&registry.epoch_total_votes, current_epoch)
-        } else { 0 };
+        let current_total = table::u128_or_zero(&registry.epoch_total_votes, current_epoch);
         smart_table::upsert(&mut registry.epoch_total_votes, current_epoch, current_total + power);
 
         // Record the epoch in which this veToken voted to prevent double-voting via merge
@@ -325,9 +354,7 @@ module dao_factory::zeal {
             return
         };
 
-        let total_votes = if (smart_table::contains(&registry.epoch_total_votes, target_epoch)) {
-            *smart_table::borrow(&registry.epoch_total_votes, target_epoch)
-        } else { 0 };
+        let total_votes = table::u128_or_zero(&registry.epoch_total_votes, target_epoch);
 
         // If no one voted, everything goes to the default destination immediately
         if (total_votes == 0) {
@@ -380,9 +407,7 @@ module dao_factory::zeal {
         let total_votes = *smart_table::borrow(&registry.epoch_total_votes, target_epoch);
         
         let gauge_votes_table = smart_table::borrow(&registry.epoch_gauge_votes, target_epoch);
-        let votes = if (smart_table::contains(gauge_votes_table, gauge_id)) {
-            *smart_table::borrow(gauge_votes_table, gauge_id)
-        } else { 0 };
+        let votes = table::u128_or_zero(gauge_votes_table, gauge_id);
 
         if (votes > 0 && total_votes > 0) {
             let share = (((total_emissions as u128) * votes / total_votes) as u64);
@@ -438,11 +463,9 @@ module dao_factory::zeal {
         if (!exists<GaugeRegistry>(dao_address)) return 0;
         let registry = borrow_global<GaugeRegistry>(dao_address);
         if (!smart_table::contains(&registry.epoch_gauge_votes, pilgrim)) return 0;
-        
+
         let votes_table = smart_table::borrow(&registry.epoch_gauge_votes, pilgrim);
-        if (smart_table::contains(votes_table, gauge_id)) {
-            *smart_table::borrow(votes_table, gauge_id)
-        } else { 0 }
+        table::u128_or_zero(votes_table, gauge_id)
     }
 
     #[view]
@@ -508,5 +531,32 @@ module dao_factory::zeal {
         let epoch_claims = smart_table::borrow(&registry.claimed_emissions, pilgrim);
         if (!smart_table::contains(epoch_claims, gauge_id)) return false;
         *smart_table::borrow(epoch_claims, gauge_id)
+    }
+
+    #[view]
+    public fun is_gauge_active(dao_address: address, gauge_id: u64): bool acquires GaugeRegistry {
+        if (!exists<GaugeRegistry>(dao_address)) return false;
+        let registry = borrow_global<GaugeRegistry>(dao_address);
+        if (!smart_table::contains(&registry.gauges, gauge_id)) return false;
+        smart_table::borrow(&registry.gauges, gauge_id).is_active
+    }
+
+    // Linear scan by staking token (birth gauges are at most a handful).
+    // Public so indexers/frontends can map pool -> gauge_id.
+    #[view]
+    public fun find_gauge_by_staking_token(dao_address: address, staking_token_addr: address): u64 acquires GaugeRegistry {
+        if (!exists<GaugeRegistry>(dao_address)) return GAUGE_NOT_FOUND;
+        let registry = borrow_global<GaugeRegistry>(dao_address);
+        let gauge_id: u64 = 0;
+        while (gauge_id < registry.next_gauge_id) {
+            if (smart_table::contains(&registry.gauges, gauge_id)) {
+                let destination = smart_table::borrow(&registry.gauges, gauge_id).destination;
+                if (foundry::staking_token(destination) == staking_token_addr) {
+                    return gauge_id
+                };
+            };
+            gauge_id = gauge_id + 1;
+        };
+        GAUGE_NOT_FOUND
     }
 }

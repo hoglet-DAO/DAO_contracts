@@ -610,6 +610,32 @@ module dao_factory::petra {
         jubilee::sync_clock(dao_address);
     }
 
+    // Activates ONLY the gauge of the pool that received seed liquidity at
+    // migration time. Birth gauges start inactive (at deploy it is not yet
+    // known which pool the migration will seed); the launcher calls this in
+    // the same migration transaction that adds liquidity, so exactly one
+    // gauge becomes votable. The empty pool's gauge stays inactive unable
+    // to receive votes/emissions until governance activates it (anchor,
+    // gauge action_type == 2) once its pool has organic liquidity.
+    public entry fun activate_seeded_gauge(
+        launcher_signer: &signer,
+        dao_address: address,
+        staking_token_addr: address,
+    ) acquires LauncherRegistry {
+        // SECURITY: the caller must be an approved launcher AND the launcher
+        // that created this DAO (charter stores the binding at creation).
+        let launcher_addr = std::signer::address_of(launcher_signer);
+        assert_launcher(launcher_addr);
+        assert!(
+            charter::get_launcher_address(dao_address) == launcher_addr,
+            std::error::permission_denied(E_UNAUTHORIZED_LAUNCHER)
+        );
+        // Only inflationary DAOs (born with the zeal registry) have gauges.
+        assert!(zeal::is_initialized(dao_address), std::error::invalid_state(E_NOT_INFLATIONARY));
+
+        zeal::activate_gauge_by_staking_token(dao_address, staking_token_addr);
+    }
+
     public fun update_static_dao_threshold(
         launcher_signer: &signer,
         dao_address: address,

@@ -25,6 +25,7 @@ module dao_factory::boost_registry {
     use aptos_std::smart_table::{Self, SmartTable};
     use aptos_token_objects::collection;
     use aptos_token_objects::token;
+    use dao_factory::table;
 
     // Errors
     const E_COLLECTION_NOT_FOUND: u64 = 1;
@@ -227,11 +228,7 @@ module dao_factory::boost_registry {
                 let collection_obj = token::collection_object(token_obj);
                 let collection_addr = object::object_address(&collection_obj);
 
-                let coll_bps = if (smart_table::contains(&registry.collections, collection_addr)) {
-                    *smart_table::borrow(&registry.collections, collection_addr)
-                } else {
-                    0
-                };
+                let coll_bps = table::u64_or_zero(&registry.collections, collection_addr);
 
                 if (coll_bps == 0 || vector::contains(&counted_collections, &collection_addr)) {
                     vector::push_back(&mut rejected_nfts, nft_addr);
@@ -264,12 +261,7 @@ module dao_factory::boost_registry {
     #[view]
     public fun get_collection_boost(dao_address: address, collection_addr: address): u64 acquires BoostRegistry {
         if (!exists<BoostRegistry>(dao_address)) return 0;
-        let registry = borrow_global<BoostRegistry>(dao_address);
-        if (smart_table::contains(&registry.collections, collection_addr)) {
-            *smart_table::borrow(&registry.collections, collection_addr)
-        } else {
-            0
-        }
+        table::u64_or_zero(&borrow_global<BoostRegistry>(dao_address).collections, collection_addr)
     }
     
     #[view]

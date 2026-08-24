@@ -13,8 +13,10 @@ module dao_factory::harvest {
     use supra_framework::fungible_asset::{Self, FungibleAsset, FungibleStore, Metadata};
     use supra_framework::object::Object;
     use supra_framework::primary_fungible_store;
+    use supra_framework::dispatchable_fungible_asset;
     use supra_framework::event;
     use aptos_std::smart_table::{Self, SmartTable};
+    use dao_factory::table;
 
     // Constants 
     // Precision factor to avoid truncation in division.
@@ -84,7 +86,7 @@ module dao_factory::harvest {
         if (total_locked > 0 && amount > 0) {
             let increment = (((amount as u256) * PRECISION / (total_locked as u256)) as u128);
             vault.acc_reward_per_share = vault.acc_reward_per_share + increment;
-            fungible_asset::deposit(vault.store, reward);
+            dispatchable_fungible_asset::deposit(vault.store, reward);
         } else {
             // SECURITY FIX (VULN-06): mirror of legacy::inject_rebase. When no
             // one is locking, rewards deposited into the vault would be
@@ -126,11 +128,7 @@ module dao_factory::harvest {
     ) acquires RewardVault {
         let vault = borrow_global_mut<RewardVault>(dao_address);
 
-        let debt: u128 = if (smart_table::contains(&vault.user_debt, ve_addr)) {
-            *smart_table::borrow(&vault.user_debt, ve_addr)
-        } else {
-            0
-        };
+        let debt: u128 = table::u128_or_zero(&vault.user_debt, ve_addr);
 
         // Pending = (locked * acc_per_share / PRECISION) - debt
         let earned_u128 = (((locked_amount as u256) * (vault.acc_reward_per_share as u256) / PRECISION) as u128);
@@ -168,11 +166,7 @@ module dao_factory::harvest {
 
         let vault = borrow_global<RewardVault>(dao_address);
 
-        let debt: u128 = if (smart_table::contains(&vault.user_debt, ve_addr)) {
-            *smart_table::borrow(&vault.user_debt, ve_addr)
-        } else {
-            0
-        };
+        let debt: u128 = table::u128_or_zero(&vault.user_debt, ve_addr);
 
         let earned_u128 = (((locked_amount as u256) * (vault.acc_reward_per_share as u256) / PRECISION) as u128);
         if (earned_u128 > debt) { ((earned_u128 - debt) as u64) } else { 0 }

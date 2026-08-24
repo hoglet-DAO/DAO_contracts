@@ -152,7 +152,7 @@ module dao_factory::anchor {
                 // target_address is the LP Token Address
                 let dao_token_address = dao_factory::legacy::get_dao_token_address(dao_address);
                 let gauge_address = foundry::create_gauge(&dao_signer, target_address, dao_token_address);
-                dao_factory::zeal::create_gauge(&dao_signer, gauge_address, target_address);
+                dao_factory::zeal::create_gauge(&dao_signer, gauge_address, target_address, true);
                 if (smart_token::is_initialized(dao_token_address)) {
                     smart_token::set_exemption(dao_token_address, &dao_signer, gauge_address, true);
                 };
@@ -193,6 +193,9 @@ module dao_factory::anchor {
             } else if (setting_type == 3) { // Smart Token: Update Blacklist
                 let token_addr = dao_factory::legacy::get_dao_token_address(dao_address);
                 smart_token::update_blacklist(token_addr, &dao_signer, target_address, bool_val == 1);
+            } else if (setting_type == 4) { // Smart Token: Set Exemption (Whitelist)
+                let token_addr = dao_factory::legacy::get_dao_token_address(dao_address);
+                smart_token::set_exemption(token_addr, &dao_signer, target_address, bool_val == 1);
             } else {
                 abort error::invalid_argument(E_INVALID_ACTION)
             };
