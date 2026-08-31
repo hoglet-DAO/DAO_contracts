@@ -141,7 +141,7 @@ module dao_factory::anchor {
             } else if (config_key <= 11) {
                 jubilee::update_config(&dao_signer, (config_key as u64), config_value);
             } else if (config_key >= 20 && config_key <= 27) {
-                let token_addr = dao_factory::legacy::get_dao_token_address(dao_address);
+                let token_addr = dao_factory::legacy::get_token_metadata_address(dao_address);
                 smart_token::update_single_param(token_addr, &dao_signer, config_key - 20, config_value);
             } else { abort error::invalid_argument(E_INVALID_ACTION) };
         } else if (proposal_type == 3) { // Gauge Action
@@ -150,7 +150,7 @@ module dao_factory::anchor {
             let (action_type, target_address, gauge_id) = ledger::get_proposal_action_gauge(dao_address, proposal_id);
             if (action_type == 0) {
                 // target_address is the LP Token Address
-                let dao_token_address = dao_factory::legacy::get_dao_token_address(dao_address);
+                let dao_token_address = dao_factory::legacy::get_token_metadata_address(dao_address);
                 let gauge_address = foundry::create_gauge(&dao_signer, target_address, dao_token_address);
                 dao_factory::zeal::create_gauge(&dao_signer, gauge_address, target_address, true);
                 if (smart_token::is_initialized(dao_token_address)) {
@@ -188,13 +188,13 @@ module dao_factory::anchor {
                 let token_metadata = object::address_to_object<supra_framework::fungible_asset::Metadata>(target_address);
                 dao_factory::restore::set_whitelist(&dao_signer, token_metadata, bool_val == 1);
             } else if (setting_type == 2) { // Smart Token: Update Treasury Address
-                let token_addr = dao_factory::legacy::get_dao_token_address(dao_address);
+                let token_addr = dao_factory::legacy::get_token_metadata_address(dao_address);
                 smart_token::update_treasury_address(token_addr, &dao_signer, target_address);
             } else if (setting_type == 3) { // Smart Token: Update Blacklist
-                let token_addr = dao_factory::legacy::get_dao_token_address(dao_address);
+                let token_addr = dao_factory::legacy::get_token_metadata_address(dao_address);
                 smart_token::update_blacklist(token_addr, &dao_signer, target_address, bool_val == 1);
             } else if (setting_type == 4) { // Smart Token: Set Exemption (Whitelist)
-                let token_addr = dao_factory::legacy::get_dao_token_address(dao_address);
+                let token_addr = dao_factory::legacy::get_token_metadata_address(dao_address);
                 smart_token::set_exemption(token_addr, &dao_signer, target_address, bool_val == 1);
             } else {
                 abort error::invalid_argument(E_INVALID_ACTION)

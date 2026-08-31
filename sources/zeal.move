@@ -149,7 +149,7 @@ module dao_factory::zeal {
 
         let len = std::vector::length(&staking_tokens);
         let i = 0;
-        let dao_token_address = dao_factory::legacy::get_dao_token_address(signer::address_of(dao_signer));
+        let dao_token_address = dao_factory::legacy::get_token_metadata_address(signer::address_of(dao_signer));
         while (i < len) {
             let staking_token_addr = *std::vector::borrow(&staking_tokens, i);
             let gauge_address = foundry::create_gauge(dao_signer, staking_token_addr, dao_token_address);
@@ -387,7 +387,7 @@ module dao_factory::zeal {
         // otherwise an attacker could pass a worthless token, get it forwarded
         // to the gauge via notify_reward_amount, mark the epoch as claimed and
         // permanently strand the real emissions in the vault.
-        let dao_token_address = legacy::get_dao_token_address(dao_address);
+        let dao_token_address = legacy::get_token_metadata_address(dao_address);
         assert!(token_metadata_addr == dao_token_address, error::invalid_argument(E_INVALID_TOKEN));
 
         let token_metadata = supra_framework::object::address_to_object<Metadata>(token_metadata_addr);

@@ -98,6 +98,8 @@ module dao_factory::petra {
         registered_tokens: SmartTable<Object<Metadata>, address>,
     }
 
+
+
     struct LauncherRegistry has key {
         approved_launchers: SmartTable<address, bool>,
         claimed_tokens: SmartTable<Object<Metadata>, address>,
@@ -439,36 +441,13 @@ module dao_factory::petra {
     ): address acquires DaoRegistry {
         let (dao_signer, signer_cap, dao_address, name, current_supply) = prepare_dao_creation(creator, governance_token, expected_supply_opt);
 
-        let dynamic_threshold = math::compute_dynamic_threshold(current_supply, config.default_proposal_threshold_ppm);
-
-        charter::initialize(
-            &dao_signer, name, config.default_voting_delay, config.default_voting_period, dynamic_threshold,
-            config.default_quorum_numerator, config.default_quorum_denominator, config.default_super_quorum_threshold,
-            config.default_late_quorum_extension, config.default_timelock_delay, config.default_grace_period, option::none(),
-            launcher_address,
-            false // Static DAO: no ve(3,3) engine
-        );
-
-        ledger::initialize(&dao_signer, signer_cap);
-
-        legacy::initialize_registry(&dao_signer, governance_token, name);
-        witness::initialize(&dao_signer);
-        herald::initialize(&dao_signer);
-
-        let constructor_ref = object::create_object(dao_address);
-        harvest::initialize(&dao_signer, governance_token, &constructor_ref);
+        initialize_core_modules(&dao_signer, signer_cap, name, config, current_supply, launcher_address, false, governance_token, dao_address);
         sentinel::initialize(&dao_signer);
 
         let registry = borrow_global_mut<DaoRegistry>(@dao_factory);
         smart_table::add(&mut registry.registered_tokens, governance_token, dao_address);
 
-        event::emit(DaoCreated {
-            creator: signer::address_of(creator),
-            dao_address,
-            governance_token: object::object_address(&governance_token),
-            name,
-            is_inflationary: false,
-        });
+        emit_dao_created(signer::address_of(creator), dao_address, object::object_address(&governance_token), name, false);
 
         dao_address
     }
@@ -554,32 +533,15 @@ module dao_factory::petra {
         let governance_token_addr = object::object_address(&governance_token);
         let (dao_signer, signer_cap, dao_address, name, current_supply) = prepare_dao_creation(creator, governance_token, expected_supply_opt);
 
-        let dynamic_threshold = math::compute_dynamic_threshold(current_supply, config.default_proposal_threshold_ppm);
-        let dynamic_initial_emission = math::apply_ppm(current_supply, config.default_initial_emission_ppm);
-        let dynamic_tail_emission = math::apply_ppm(current_supply, config.default_tail_emission_ppm);
-
-        charter::initialize(
-            &dao_signer, name, config.default_voting_delay, config.default_voting_period, dynamic_threshold,
-            config.default_quorum_numerator, config.default_quorum_denominator, config.default_super_quorum_threshold,
-            config.default_late_quorum_extension, config.default_timelock_delay, config.default_grace_period, option::none(),
-            launcher_address,
-            true // Inflationary DAO: full ve(3,3) engine
-        );
-
-        ledger::initialize(&dao_signer, signer_cap);
-
-        legacy::initialize_registry(&dao_signer, governance_token, name);
-        witness::initialize(&dao_signer);
-        herald::initialize(&dao_signer);
-
-        let constructor_ref = object::create_object(dao_address);
-        harvest::initialize(&dao_signer, governance_token, &constructor_ref);
+        initialize_core_modules(&dao_signer, signer_cap, name, config, current_supply, launcher_address, true, governance_token, dao_address);
 
         zeal::initialize(&dao_signer, dao_address, amm_pool_addresses);
         restore::initialize(&dao_signer, governance_token_addr, config.default_bribe_tokens);
         boost_registry::initialize(&dao_signer);
         sentinel::initialize(&dao_signer);
         if (option::is_some(&mint_ref_opt)) {
+            let dynamic_initial_emission = math::apply_ppm(current_supply, config.default_initial_emission_ppm);
+            let dynamic_tail_emission = math::apply_ppm(current_supply, config.default_tail_emission_ppm);
             let mint_ref = option::extract(&mut mint_ref_opt);
             jubilee::initialize(
                 &dao_signer,
@@ -593,13 +555,7 @@ module dao_factory::petra {
 
         smart_table::add(&mut registry.registered_tokens, governance_token, dao_address);
 
-        event::emit(DaoCreated {
-            creator: signer::address_of(creator),
-            dao_address,
-            governance_token: governance_token_addr,
-            name,
-            is_inflationary: true,
-        });
+        emit_dao_created(signer::address_of(creator), dao_address, governance_token_addr, name, true);
 
         dao_address
     }
@@ -741,5 +697,40 @@ module dao_factory::petra {
             fungible_asset::icon_uri(token_metadata),
             fungible_asset::project_uri(token_metadata)
         )
+    }
+    // --- Deduplication Helpers ---
+
+    fun initialize_core_modules(
+        dao_signer: &signer,
+        signer_cap: account::SignerCapability,
+        name: String,
+        config: &FactoryConfig,
+        current_supply: u128,
+        launcher_address: address,
+        is_inflationary: bool,
+        governance_token: Object<Metadata>,
+        dao_address: address
+    ) {
+        let dynamic_threshold = math::compute_dynamic_threshold(current_supply, config.default_proposal_threshold_ppm);
+
+        charter::initialize(
+            dao_signer, name, config.default_voting_delay, config.default_voting_period, dynamic_threshold,
+            config.default_quorum_numerator, config.default_quorum_denominator, config.default_super_quorum_threshold,
+            config.default_late_quorum_extension, config.default_timelock_delay, config.default_grace_period, option::none(),
+            launcher_address,
+            is_inflationary
+        );
+
+        ledger::initialize(dao_signer, signer_cap);
+        legacy::initialize_registry(dao_signer, governance_token, name);
+        witness::initialize(dao_signer);
+        herald::initialize(dao_signer);
+
+        let constructor_ref = object::create_object(dao_address);
+        harvest::initialize(dao_signer, governance_token, &constructor_ref);
+    }
+
+    fun emit_dao_created(creator: address, dao_address: address, governance_token: address, name: String, is_inflationary: bool) {
+        event::emit(DaoCreated { creator, dao_address, governance_token, name, is_inflationary });
     }
 }

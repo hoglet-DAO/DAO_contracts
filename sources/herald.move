@@ -22,6 +22,7 @@ module dao_factory::herald {
     use dao_factory::ledger;
     use dao_factory::charter;
     use dao_factory::legacy;
+    use dao_factory::math;
 
 
     use dao_factory::sentinel;
@@ -158,13 +159,13 @@ module dao_factory::herald {
         
         let quorum_required = if (is_super_quorum) {
             if (quorum_den > 0) {
-                ((((total_locked as u128) * (super_quorum_threshold as u128)) / (quorum_den as u128)) as u64)
+                math::mul_div_u64(total_locked, super_quorum_threshold, quorum_den)
             } else {
                 0
             }
         } else {
             let default_quorum = if (quorum_den > 0) {
-                ((((total_locked as u128) * (quorum_num as u128)) / (quorum_den as u128)) as u64)
+                math::mul_div_u64(total_locked, quorum_num, quorum_den)
             } else {
                 0
             };

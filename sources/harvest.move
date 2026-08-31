@@ -93,7 +93,8 @@ module dao_factory::harvest {
             // stranded forever (the accumulator can never distribute them).
             // Redirect them to the DAO treasury instead, where governance
             // can recover them.
-            primary_fungible_store::deposit(dao_address, reward);
+            let dest_store = primary_fungible_store::ensure_primary_store_exists(dao_address, fungible_asset::asset_metadata(&reward));
+            fungible_asset::deposit(dest_store, reward);
         };
 
         event::emit(RewardsInjected {
@@ -139,13 +140,10 @@ module dao_factory::harvest {
         // Update debt to the current accumulator.
         smart_table::upsert(&mut vault.user_debt, ve_addr, earned_u128);
 
-        // Transfer rewards to the owner.
-        let vault_signer = supra_framework::object::generate_signer_for_extending(&vault.extend_ref);
-        let dest_store = primary_fungible_store::ensure_primary_store_exists(
-            owner_addr,
-            vault.reward_token,
-        );
-        fungible_asset::transfer(&vault_signer, vault.store, dest_store, pending);
+        // Transfer rewards to the owner tax-free.
+        let dest_store = primary_fungible_store::ensure_primary_store_exists(owner_addr, vault.reward_token);
+        let fa = dao_factory::tax_router::withdraw_tax_free(dao_address, vault.store, pending);
+        dao_factory::tax_router::deposit_tax_free(dao_address, dest_store, fa);
 
         event::emit(RewardsClaimed {
             dao_address,

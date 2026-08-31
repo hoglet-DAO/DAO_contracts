@@ -19,6 +19,7 @@ module dao_factory::foundry {
     use dao_factory::boost_registry;
     use dao_factory::table;
 
+
     // Errors
     const E_ZERO_AMOUNT: u64 = 2;
     const E_INSUFFICIENT_BALANCE: u64 = 3;
@@ -323,7 +324,7 @@ module dao_factory::foundry {
             smart_table::upsert(&mut gauge.rewards, user_addr, reward - claimable);
             
             let dao_token = gauge.dao_token;
-            withdraw_fa(gauge, dao_token, (claimable as u64), user_addr);
+            withdraw_reward_fa(gauge, (claimable as u64), user_addr);
 
             event::emit(RewardPaid { gauge_address: gauge_addr, user: user_addr, reward: (claimable as u64) });
         }
@@ -544,5 +545,15 @@ module dao_factory::foundry {
         let gauge_signer = object::generate_signer_for_extending(&gauge.extend_ref);
         let fa = primary_fungible_store::withdraw(&gauge_signer, token, amount);
         primary_fungible_store::deposit(to, fa);
+    }
+
+    fun withdraw_reward_fa(gauge: &Gauge, amount: u64, to: address) {
+        let gauge_signer = object::generate_signer_for_extending(&gauge.extend_ref);
+        // Withdraw from Gauge (whitelisted, no sell tax)
+        let fa = primary_fungible_store::withdraw(&gauge_signer, gauge.dao_token, amount);
+        
+        // Deposit to user (bypassing buy tax)
+        let dest_store = primary_fungible_store::ensure_primary_store_exists(to, gauge.dao_token);
+        dao_factory::tax_router::deposit_tax_free(gauge.dao_address, dest_store, fa);
     }
 }

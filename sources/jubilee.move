@@ -117,7 +117,9 @@ module dao_factory::jubilee {
         let actual_epochs_processed = 0;
         while (actual_epochs_processed < epochs_to_process) {
             let emission_this_epoch = config.weekly_emission;
-            assert!(emission_this_epoch <= MAX_MINT_PER_EPOCH, error::invalid_state(E_MINT_EXCEEDED));
+            if (emission_this_epoch > MAX_MINT_PER_EPOCH) {
+                emission_this_epoch = MAX_MINT_PER_EPOCH;
+            };
             
             // SECURITY FIX (M5): Prevents that the fixed pagination causes an overflow 
             // permanente of u64 (18.44e18) if the weekly emission is high.

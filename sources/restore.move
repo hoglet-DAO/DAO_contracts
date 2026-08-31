@@ -10,14 +10,16 @@ module dao_factory::restore {
     friend dao_factory::anchor;
     use std::signer;
     use std::vector;
-    use supra_framework::fungible_asset::{Self, Metadata};
+    use supra_framework::fungible_asset::Metadata;
     use supra_framework::primary_fungible_store;
-    use supra_framework::dispatchable_fungible_asset;
+
     use supra_framework::object::{Self, Object, ExtendRef};
     use supra_framework::event;
     use aptos_std::smart_table::{Self, SmartTable};
     use std::error;
     
+
+    use dao_factory::math;
     use dao_factory::pilgrim;
     use dao_factory::zeal;
     use dao_factory::legacy;
@@ -209,7 +211,8 @@ module dao_factory::restore {
         let token_addr = object::object_address(&token_metadata);
         let registry = borrow_global_mut<BribeRegistry>(dao_address);
         
-        let fa = primary_fungible_store::withdraw(depositor, token_metadata, amount);
+        let user_store = primary_fungible_store::primary_store(depositor_addr, token_metadata);
+        let fa = dao_factory::tax_router::withdraw_tax_free(dao_address, user_store, amount);
         process_bribe_deposit(registry, dao_address, depositor_addr, pilgrim, gauge_id, token_addr, amount, fa);
     }
 
@@ -278,13 +281,14 @@ module dao_factory::restore {
         assert!(!smart_table::contains(&registry.claims, claim_key), error::invalid_state(E_ALREADY_CLAIMED));
         smart_table::add(&mut registry.claims, claim_key, true);
         // Their portion is proportional to their vote contribution to the gauge
-        let share = (((total_bribe as u128) * user_power / total_power) as u64);
+        let share = (math::mul_div_u128((total_bribe as u128), user_power, total_power) as u64);
         
         if (share > 0) {
-            let vault_signer = object::generate_signer_for_extending(&registry.vault_extend_ref);
+
             let vault_store = primary_fungible_store::primary_store(registry.vault_address, token_metadata);
-            let fa = dispatchable_fungible_asset::withdraw(&vault_signer, vault_store, share);
-            primary_fungible_store::deposit(claimer_addr, fa);
+            let fa = dao_factory::tax_router::withdraw_tax_free(dao_address, vault_store, share);
+            let user_store = primary_fungible_store::ensure_primary_store_exists(claimer_addr, token_metadata);
+            dao_factory::tax_router::deposit_tax_free(dao_address, user_store, fa);
 
             event::emit(BribeClaimed {
                 dao_address, claimer: claimer_addr, legacy: ve_token_addr, pilgrim, gauge_id, token: token_addr, amount: share
