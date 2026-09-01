@@ -21,7 +21,7 @@ rev = "dev"
 subdir = "aptos-move/framework/aptos-token-objects"
 
 [dependencies.dao_libs]
-local = "../dao_libs"
+local = "../dao_libs_v2"
 
 [dependencies.dao_tokens]
 local = "../dao_tokens"

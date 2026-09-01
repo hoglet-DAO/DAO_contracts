@@ -142,7 +142,16 @@ module dao_factory::harvest {
 
         // Transfer rewards to the owner tax-free.
         let dest_store = primary_fungible_store::ensure_primary_store_exists(owner_addr, vault.reward_token);
-        let fa = dao_factory::tax_router::withdraw_tax_free(dao_address, vault.store, pending);
+        // FIX (audit10 C3): with a TaxFreeRouter the cap path bypasses the
+        // dispatch hooks; plain-FA DAOs sign with the vault object itself,
+        // which owns its store (its ExtendRef is stored in RewardVault for
+        // exactly this purpose).
+        let fa = if (dao_factory::tax_router::has_tax_free_router(dao_address)) {
+            dao_factory::tax_router::withdraw_tax_free(dao_address, vault.store, pending)
+        } else {
+            let vault_signer = supra_framework::object::generate_signer_for_extending(&vault.extend_ref);
+            fungible_asset::withdraw(&vault_signer, vault.store, pending)
+        };
         dao_factory::tax_router::deposit_tax_free(dao_address, dest_store, fa);
 
         event::emit(RewardsClaimed {

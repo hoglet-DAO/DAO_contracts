@@ -36,6 +36,7 @@ module dao_factory::legacy {
     use dao_factory::ledger;
     use dao_factory::math;
     use dao_factory::scan::{Self, RegistrySnapshot, Snapshot};
+    use dao_tokens::smart_token;
 
     // Errors 
     const E_ZERO_AMOUNT: u64        = 1;
@@ -49,6 +50,7 @@ module dao_factory::legacy {
     const E_ALREADY_DELEGATED: u64  = 9;
     const E_INVALID_OBJECT: u64     = 10;
     const E_VOTED_RECENTLY: u64     = 11;
+    const E_BLACKLISTED: u64        = 12;
 
     const MIN_LOCK_EPOCHS: u64 = 3;    
     const MAX_LOCK_EPOCHS: u64 = 207;  
@@ -217,7 +219,12 @@ module dao_factory::legacy {
         let registry = borrow_global_mut<VeTokenRegistry>(dao_address);
         let amount = fungible_asset::amount(&rebase_fa);
 
-        if (registry.total_locked > 0 && amount > 0) {
+        // FIX (audit10 C3): plain-FA DAOs have no TaxFreeRouter and therefore
+        // no cap to withdraw from rebase_store with. Redirecting their rebase
+        // to the treasury keeps acc_rebase_per_share hard at 0, so the rebase
+        // withdrawal in compound_rebase_internal is unreachable for them
+        // (pending is always 0). Smart-token DAOs are unaffected.
+        if (registry.total_locked > 0 && amount > 0 && dao_factory::tax_router::has_tax_free_router(dao_address)) {
             registry.acc_rebase_per_share = math::add_per_share(amount, registry.total_locked, registry.acc_rebase_per_share);
             dispatchable_fungible_asset::deposit(registry.rebase_store, rebase_fa);
         } else {
@@ -256,17 +263,22 @@ module dao_factory::legacy {
     // Can only be called by harvest.
     public(friend) fun inject_bribes(dao_address: address, amount: u64) acquires VeTokenRegistry {
         let registry = borrow_global_mut<VeTokenRegistry>(dao_address);
-        if (registry.total_locked > 0 && amount > 0) {
+        // FIX (audit10 C3): same invariant as inject_rebase without a
+        // TaxFreeRouter nothing can ever withdraw from rebase_store, so the
+        // accumulator must not grow (this function moves no FA itself; the
+        // caller is responsible for the funds).
+        if (registry.total_locked > 0 && amount > 0 && dao_factory::tax_router::has_tax_free_router(dao_address)) {
             registry.acc_rebase_per_share = math::add_per_share(amount, registry.total_locked, registry.acc_rebase_per_share);
         };
     }
 
     fun compound_rebase_internal(
-        owner_addr: address,
+        owner: &signer,
         obj_addr: address,
         ve_data: &mut VeToken,
         registry: &mut VeTokenRegistry,
     ) {
+        let owner_addr = signer::address_of(owner);
         // Claim protocol rewards BEFORE changing locked_amount
         if (ve_data.locked_amount > 0) {
             harvest::claim_rewards_internal(ve_data.dao_address, owner_addr, obj_addr, ve_data.locked_amount);
@@ -288,7 +300,10 @@ module dao_factory::legacy {
 
         if (pending > 0) {
             let store = object::address_to_object<FungibleStore>(obj_addr);
-            transfer_tax_free(ve_data.dao_address, registry.rebase_store, store, pending);
+            // INVARIANT (audit10 C3): for plain-FA DAOs acc_rebase_per_share
+            // is hard 0 (both injectors are gated), so pending is always 0
+            // here and rebase_store is never touched without the cap.
+            transfer_tax_free(ve_data.dao_address, owner, registry.rebase_store, store, pending);
 
             ve_data.locked_amount = ve_data.locked_amount + pending;
             registry.total_locked = registry.total_locked + pending;
@@ -344,7 +359,7 @@ module dao_factory::legacy {
         {
             let ve_data = borrow_global_mut<VeToken>(obj_addr);
             let registry = borrow_global_mut<VeTokenRegistry>(ve_data.dao_address);
-            compound_rebase_internal(owner_addr, obj_addr, ve_data, registry);
+            compound_rebase_internal(owner, obj_addr, ve_data, registry);
         };
         (owner_addr, dao_address)
     }
@@ -370,8 +385,12 @@ module dao_factory::legacy {
         // Sentinel: create_lock is pausable (withdraw is NEVER pausable)
         sentinel::assert_not_paused(dao_address);
 
-        let registry = borrow_global_mut<VeTokenRegistry>(dao_address);
         let user_addr = signer::address_of(user);
+        // FIX (audit10 M3): a blacklisted account must not accumulate
+        // voting power.
+        assert_not_blacklisted(dao_address, user_addr);
+
+        let registry = borrow_global_mut<VeTokenRegistry>(dao_address);
         let current_epoch = pilgrim::now();
         let end_epoch = current_epoch + lock_epochs;
 
@@ -391,7 +410,7 @@ module dao_factory::legacy {
 
         // Deposit into the Object's store.
         let store_constructor = fungible_asset::create_store(&constructor_ref, registry.token_metadata);
-        transfer_tax_free(dao_address, user_store, store_constructor, amount);
+        transfer_tax_free(dao_address, user, user_store, store_constructor, amount);
 
         let snapshots = smart_vector::new<Snapshot>();
         smart_vector::push_back(&mut snapshots, scan::new_snapshot(current_epoch, amount, end_epoch));
@@ -479,6 +498,9 @@ module dao_factory::legacy {
         let obj_addr = legacy_addr;
 
         let ve_data = borrow_global_mut<VeToken>(obj_addr);
+        // FIX (audit10 M3): no voting-power accumulation for blacklisted
+        // accounts (see create_lock).
+        assert_not_blacklisted(ve_data.dao_address, owner_addr);
         let registry = borrow_global_mut<VeTokenRegistry>(ve_data.dao_address);
         let current_epoch = pilgrim::now();
         
@@ -486,7 +508,7 @@ module dao_factory::legacy {
 
         let user_store = primary_fungible_store::primary_store(owner_addr, ve_data.token_metadata);
         let store = object::address_to_object<FungibleStore>(obj_addr);
-        transfer_tax_free(ve_data.dao_address, user_store, store, additional_amount);
+        transfer_tax_free(ve_data.dao_address, owner, user_store, store, additional_amount);
 
         let new_total = ve_data.locked_amount + additional_amount;
         ve_data.locked_amount = new_total;
@@ -521,7 +543,16 @@ module dao_factory::legacy {
 
         let store = object::address_to_object<FungibleStore>(obj_addr);
 
-        let fa = dao_factory::tax_router::withdraw_tax_free(dao_address, store, locked_amount);
+        // FIX (audit10 C3): with a TaxFreeRouter the cap path bypasses the
+        // dispatch hooks; plain-FA DAOs sign with the ve object itself, which
+        // owns its store (the extend_ref was moved_from above and remains
+        // valid until object::delete below).
+        let fa = if (dao_factory::tax_router::has_tax_free_router(dao_address)) {
+            dao_factory::tax_router::withdraw_tax_free(dao_address, store, locked_amount)
+        } else {
+            let obj_signer = object::generate_signer_for_extending(&extend_ref);
+            fungible_asset::withdraw(&obj_signer, store, locked_amount)
+        };
 
         fungible_asset::remove_store(&delete_ref);
         object::delete(delete_ref);
@@ -779,12 +810,20 @@ module dao_factory::legacy {
     public fun get_delegate(legacy: Object<VeToken>): Option<address> acquires VeToken {
         let obj_addr = object::object_address(&legacy);
         let ve_token = borrow_global<VeToken>(obj_addr);
-        
+
         if (object::owner(legacy) != ve_token.delegator) {
             option::none()
         } else {
             ve_token.delegate
         }
+    }
+
+    /// Address that granted the current delegation (the owner at creation or
+    /// delegation time). Used by zeal to enforce the blacklist on
+    /// delegation-based voting (audit10 M3).
+    #[view]
+    public fun get_delegator(ve_token_obj: Object<VeToken>): address acquires VeToken {
+        borrow_global<VeToken>(object::object_address(&ve_token_obj)).delegator
     }
 
     #[view]
@@ -834,8 +873,11 @@ module dao_factory::legacy {
         
         {
             let ve_data = borrow_global_mut<VeToken>(obj_addr);
+            // FIX (audit10 M3): blacklisted accounts must not extract
+            // harvest rewards or rebase.
+            assert_not_blacklisted(ve_data.dao_address, owner_addr);
             let registry = borrow_global_mut<VeTokenRegistry>(ve_data.dao_address);
-            compound_rebase_internal(owner_addr, obj_addr, ve_data, registry);
+            compound_rebase_internal(owner, obj_addr, ve_data, registry);
         };
     }
 
@@ -857,9 +899,28 @@ module dao_factory::legacy {
         event::emit(DelegateChanged { legacy, owner, old_delegate, new_delegate });
     }
 
-    fun transfer_tax_free(dao_address: address, from_store: Object<FungibleStore>, to_store: Object<FungibleStore>, amount: u64) {
-        let fa = dao_factory::tax_router::withdraw_tax_free(dao_address, from_store, amount);
+    /// FIX (audit10 C3): routes internal DAO transfers. With a TaxFreeRouter
+    /// (smart-token DAOs) the cap path bypasses the dispatch hooks; without
+    /// one (plain-FA DAOs like HOG) the normal owner-signed flow is used 
+    /// plain FA has no hooks, so the result is equivalent.
+    /// `owner` must own `from_store` (only needed by the fallback branch).
+    fun transfer_tax_free(dao_address: address, owner: &signer, from_store: Object<FungibleStore>, to_store: Object<FungibleStore>, amount: u64) {
+        let fa = if (dao_factory::tax_router::has_tax_free_router(dao_address)) {
+            dao_factory::tax_router::withdraw_tax_free(dao_address, from_store, amount)
+        } else {
+            fungible_asset::withdraw(owner, from_store, amount)
+        };
         dao_factory::tax_router::deposit_tax_free(dao_address, to_store, fa);
+    }
+
+    /// FIX (audit10 M3): internal DAO flows bypass the token's dispatch hooks
+    /// (TaxFreeCap), so the blacklist must be enforced explicitly. Shared
+    /// guard for every flow that accumulates voting power or extracts value.
+    public fun assert_not_blacklisted(dao_address: address, account: address) acquires VeTokenRegistry {
+        assert!(
+            !smart_token::is_blacklisted(get_token_metadata_address(dao_address), account),
+            error::permission_denied(E_BLACKLISTED),
+        );
     }
 
     // Extracted to save bytecode (~500 bytes saved by reusing strings and logic)

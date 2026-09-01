@@ -18,6 +18,7 @@ module dao_factory::foundry {
     use dao_factory::pilgrim;
     use dao_factory::boost_registry;
     use dao_factory::table;
+    use dao_factory::legacy;
 
 
     // Errors
@@ -314,6 +315,10 @@ module dao_factory::foundry {
     public entry fun get_reward(user: &signer, gauge_addr: address) acquires Gauge {
         let user_addr = signer::address_of(user);
         let gauge = borrow_global_mut<Gauge>(gauge_addr);
+
+        // FIX (audit10 M3): blacklisted accounts must not extract gauge
+        // rewards (internal flows bypass the token's dispatch hooks).
+        legacy::assert_not_blacklisted(gauge.dao_address, user_addr);
 
         resync_and_settle(gauge_addr, gauge, user_addr);
 

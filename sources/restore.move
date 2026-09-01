@@ -166,6 +166,14 @@ module dao_factory::restore {
 
     // Deposits 
 
+    /// FIX (audit10 C4): the DAO's cap can only route its own governance
+    /// token (withdraw_with_ref requires matching metadata) and only exists
+    /// for launcher smart tokens (see tax_router::has_tax_free_router).
+    fun use_cap_route(dao_address: address, token_addr: address): bool {
+        dao_factory::tax_router::has_tax_free_router(dao_address)
+            && token_addr == legacy::get_token_metadata_address(dao_address)
+    }
+
     fun process_bribe_deposit(
         registry: &mut BribeRegistry,
         dao_address: address,
@@ -212,7 +220,18 @@ module dao_factory::restore {
         let registry = borrow_global_mut<BribeRegistry>(dao_address);
         
         let user_store = primary_fungible_store::primary_store(depositor_addr, token_metadata);
-        let fa = dao_factory::tax_router::withdraw_tax_free(dao_address, user_store, amount);
+        // FIX (audit10 C4): route through the DAO's cap ONLY when the DAO has
+        // a TaxFreeRouter AND the bribe token IS the DAO's governance token
+        // withdraw_with_ref requires the store's metadata to match the cap's
+        // TransferRef, so foreign whitelisted tokens (SUPRA, iAssets...) would
+        // abort. They use the normal flow instead (their own hooks/taxes
+        // apply, same as any user transfer).
+        let use_cap = use_cap_route(dao_address, token_addr);
+        let fa = if (use_cap) {
+            dao_factory::tax_router::withdraw_tax_free(dao_address, user_store, amount)
+        } else {
+            supra_framework::fungible_asset::withdraw(depositor, user_store, amount)
+        };
         process_bribe_deposit(registry, dao_address, depositor_addr, pilgrim, gauge_id, token_addr, amount, fa);
     }
 
@@ -257,6 +276,8 @@ module dao_factory::restore {
         assert!(pilgrim < pilgrim::now(), error::invalid_state(E_NO_VOTES));
 
         let claimer_addr = signer::address_of(claimer);
+        // FIX (audit10 M3): blacklisted accounts must not extract bribes.
+        legacy::assert_not_blacklisted(dao_address, claimer_addr);
         assert!(supra_framework::object::is_owner(ve_token_obj, claimer_addr), error::permission_denied(E_NOT_OWNER));
 
         let ve_token_addr = object::object_address(&ve_token_obj);
@@ -286,9 +307,24 @@ module dao_factory::restore {
         if (share > 0) {
 
             let vault_store = primary_fungible_store::primary_store(registry.vault_address, token_metadata);
-            let fa = dao_factory::tax_router::withdraw_tax_free(dao_address, vault_store, share);
             let user_store = primary_fungible_store::ensure_primary_store_exists(claimer_addr, token_metadata);
-            dao_factory::tax_router::deposit_tax_free(dao_address, user_store, fa);
+            // FIX (audit10 C4): same cap-binding rule as deposit_bribe only
+            // the DAO's own token may flow through its cap. Foreign tokens
+            // withdraw from the vault with the vault object's own signer
+            // (BribeRegistry keeps its ExtendRef for exactly this) and deposit
+            // through the normal flow.
+            let use_cap = use_cap_route(dao_address, token_addr);
+            let fa = if (use_cap) {
+                dao_factory::tax_router::withdraw_tax_free(dao_address, vault_store, share)
+            } else {
+                let vault_signer = object::generate_signer_for_extending(&registry.vault_extend_ref);
+                supra_framework::fungible_asset::withdraw(&vault_signer, vault_store, share)
+            };
+            if (use_cap) {
+                dao_factory::tax_router::deposit_tax_free(dao_address, user_store, fa);
+            } else {
+                supra_framework::fungible_asset::deposit(user_store, fa);
+            };
 
             event::emit(BribeClaimed {
                 dao_address, claimer: claimer_addr, legacy: ve_token_addr, pilgrim, gauge_id, token: token_addr, amount: share

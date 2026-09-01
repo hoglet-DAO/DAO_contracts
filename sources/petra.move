@@ -32,6 +32,8 @@ module dao_factory::petra {
     use dao_factory::sentinel;
     use dao_factory::boost_registry;
     use dao_factory::math;
+    use dao_factory::tax_router;
+    use dao_tokens::smart_token;
 
     // Errors 
     const E_NOT_ADMIN: u64 = 1;
@@ -590,6 +592,31 @@ module dao_factory::petra {
         assert!(zeal::is_initialized(dao_address), std::error::invalid_state(E_NOT_INFLATIONARY));
 
         zeal::activate_gauge_by_staking_token(dao_address, staking_token_addr);
+    }
+
+    /// Stores the TaxFreeCap produced by the launcher's migration flow into
+    /// the DAO's account so tax_router can route internal DAO transfers
+    /// tax-free (audit10 C1b/C2).
+    ///
+    /// SECURITY: double gate the caller must be an approved launcher AND
+    /// the launcher registered for THIS DAO (charter binds it at creation).
+    /// A TaxFreeCap can only be obtained from
+    /// smart_token::enable_tax_free_routing by the token's admin, so this
+    /// cannot be used to inject a foreign cap into a victim DAO.
+    public fun store_tax_free_cap(
+        launcher_signer: &signer,
+        dao_address: address,
+        cap: smart_token::TaxFreeCap,
+    ) acquires LauncherRegistry {
+        let launcher_addr = std::signer::address_of(launcher_signer);
+        assert_launcher(launcher_addr);
+        assert!(
+            charter::get_launcher_address(dao_address) == launcher_addr,
+            std::error::permission_denied(E_UNAUTHORIZED_LAUNCHER)
+        );
+        // Requires the DAO's resource signer: tax_router::store_tax_free_cap
+        // does move_to(dao_signer, ...).
+        tax_router::store_tax_free_cap(&ledger::generate_signer(dao_address), cap);
     }
 
     public fun update_static_dao_threshold(

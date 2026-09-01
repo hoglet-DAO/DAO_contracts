@@ -226,7 +226,7 @@ module dao_factory::zeal {
         dao_address: address,
         staking_token_addr: address,
     ): u64 acquires GaugeRegistry {
-        let gauge_id = find_gauge_by_staking_token(dao_address, staking_token_addr);
+        let gauge_id = find_gauge_by_staking_token_internal(dao_address, staking_token_addr);
         assert!(gauge_id != GAUGE_NOT_FOUND, error::invalid_argument(E_INVALID_GAUGE));
 
         let registry = borrow_global_mut<GaugeRegistry>(dao_address);
@@ -262,6 +262,11 @@ module dao_factory::zeal {
         let is_owner = supra_framework::object::is_owner(ve_token_obj, voter_addr);
         let is_delegate = legacy::is_delegate(ve_token_obj, voter_addr);
         assert!(is_owner || is_delegate, error::permission_denied(E_NOT_OWNER));
+
+        // FIX (audit10 M3): blacklisted voters or delegators must not vote
+        // (internal flows bypass the token's dispatch hooks).
+        legacy::assert_not_blacklisted(dao_address, voter_addr);
+        legacy::assert_not_blacklisted(dao_address, legacy::get_delegator(ve_token_obj));
         
         assert!(!legacy::is_expired(ve_token_obj), error::invalid_state(E_LOCK_EXPIRED));
         assert!(legacy::get_dao_address(ve_token_obj) == dao_address, error::invalid_argument(E_NOT_AUTHORIZED));
@@ -542,9 +547,10 @@ module dao_factory::zeal {
     }
 
     // Linear scan by staking token (birth gauges are at most a handful).
-    // Public so indexers/frontends can map pool -> gauge_id.
-    #[view]
-    public fun find_gauge_by_staking_token(dao_address: address, staking_token_addr: address): u64 acquires GaugeRegistry {
+    // Private: activate_gauge_by_staking_token needs the lookup internally.
+    // The public view for indexers/frontends lives in dao_views::gauge_views
+    // (package size refactor the loop must stay in core for this caller).
+    fun find_gauge_by_staking_token_internal(dao_address: address, staking_token_addr: address): u64 acquires GaugeRegistry {
         if (!exists<GaugeRegistry>(dao_address)) return GAUGE_NOT_FOUND;
         let registry = borrow_global<GaugeRegistry>(dao_address);
         let gauge_id: u64 = 0;
