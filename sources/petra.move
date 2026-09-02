@@ -193,17 +193,43 @@ module dao_factory::petra {
     // SECURITY FIX (VULN-05): Two-step transfer. The candidate must call
     // accept_admin() to complete the handover, preventing permanent loss of
     // control if new_admin contains a typo.
+    // SECURITY FIX (audit10 #6): calling with new_admin = @0x0 cancels an
+    // unclaimed pending (disarmed state, same as init/renounce). Harmless by
+    // design: a wrong pending can never take power, and the current admin
+    // keeps full authority until the candidate actually accepts.
     public entry fun transfer_admin(admin: &signer, new_admin: address) acquires FactoryConfig {
         assert_admin(admin);
-        assert!(new_admin != @0x0, error::invalid_argument(E_INVALID_ADDRESS));
         let config = borrow_global_mut<FactoryConfig>(@dao_factory);
         config.pending_admin_address = new_admin;
     }
 
     // Completes the admin transfer. Only the pending candidate can call this.
     public entry fun accept_admin(candidate: &signer) acquires FactoryConfig {
+        do_accept_admin(signer::address_of(candidate));
+    }
+
+    // SECURITY FIX (audit10 #6): the pending admin may be an account whose
+    // signer only exists inside ledger, making accept_admin unreachable for
+    // it. This permissionless crank completes the handover for:
+    //   - candidate_address == dao_address: a factory-born DAO (own signer).
+    //   - any other account: it must have offered its SignerCapability to
+    //     that DAO (ledger::offer_capability) and the DAO must have claimed
+    //     it (anchor proposal type 6)  an explicit consent by destination.
+    // It can only succeed when pending_admin_address is exactly the generated
+    // candidate, so the decision remains entirely with whoever set the
+    // pending admin. Typo'ed pendings that cannot produce a signer abort
+    // here and can never be accepted through this path.
+    public entry fun accept_admin_for_dao(dao_address: address, candidate_address: address) acquires FactoryConfig {
+        let candidate_signer = if (candidate_address == dao_address) {
+            ledger::generate_signer(dao_address)
+        } else {
+            ledger::generate_external_signer(dao_address, candidate_address)
+        };
+        do_accept_admin(signer::address_of(&candidate_signer));
+    }
+
+    fun do_accept_admin(candidate_addr: address) acquires FactoryConfig {
         let config = borrow_global_mut<FactoryConfig>(@dao_factory);
-        let candidate_addr = signer::address_of(candidate);
         assert!(
             config.pending_admin_address != @0x0 && candidate_addr == config.pending_admin_address,
             error::permission_denied(E_NOT_ADMIN)
@@ -490,8 +516,7 @@ module dao_factory::petra {
         admin: &signer,
         governance_token: Object<Metadata>
     ) acquires FactoryConfig, LauncherRegistry {
-        let config = borrow_global<FactoryConfig>(@dao_factory);
-        assert!(signer::address_of(admin) == config.admin_address, error::permission_denied(E_NOT_ADMIN));
+        assert_admin(admin);
         let launcher_registry = borrow_global_mut<LauncherRegistry>(@dao_factory);
         smart_table::remove(&mut launcher_registry.claimed_tokens, governance_token);
     }
@@ -542,17 +567,8 @@ module dao_factory::petra {
         boost_registry::initialize(&dao_signer);
         sentinel::initialize(&dao_signer);
         if (option::is_some(&mint_ref_opt)) {
-            let dynamic_initial_emission = math::apply_ppm(current_supply, config.default_initial_emission_ppm);
-            let dynamic_tail_emission = math::apply_ppm(current_supply, config.default_tail_emission_ppm);
             let mint_ref = option::extract(&mut mint_ref_opt);
-            jubilee::initialize(
-                &dao_signer,
-                mint_ref,
-                dynamic_initial_emission,
-                config.default_decay_bps,
-                dynamic_tail_emission,
-                config.default_gauge_split_bps
-            );
+            init_jubilee_internal(&dao_signer, mint_ref, config, current_supply);
         };
 
         smart_table::add(&mut registry.registered_tokens, governance_token, dao_address);
@@ -580,14 +596,7 @@ module dao_factory::petra {
         dao_address: address,
         staking_token_addr: address,
     ) acquires LauncherRegistry {
-        // SECURITY: the caller must be an approved launcher AND the launcher
-        // that created this DAO (charter stores the binding at creation).
-        let launcher_addr = std::signer::address_of(launcher_signer);
-        assert_launcher(launcher_addr);
-        assert!(
-            charter::get_launcher_address(dao_address) == launcher_addr,
-            std::error::permission_denied(E_UNAUTHORIZED_LAUNCHER)
-        );
+        assert_launcher_of_dao(launcher_signer, dao_address);
         // Only inflationary DAOs (born with the zeal registry) have gauges.
         assert!(zeal::is_initialized(dao_address), std::error::invalid_state(E_NOT_INFLATIONARY));
 
@@ -608,12 +617,7 @@ module dao_factory::petra {
         dao_address: address,
         cap: smart_token::TaxFreeCap,
     ) acquires LauncherRegistry {
-        let launcher_addr = std::signer::address_of(launcher_signer);
-        assert_launcher(launcher_addr);
-        assert!(
-            charter::get_launcher_address(dao_address) == launcher_addr,
-            std::error::permission_denied(E_UNAUTHORIZED_LAUNCHER)
-        );
+        assert_launcher_of_dao(launcher_signer, dao_address);
         // Requires the DAO's resource signer: tax_router::store_tax_free_cap
         // does move_to(dao_signer, ...).
         tax_router::store_tax_free_cap(&ledger::generate_signer(dao_address), cap);
@@ -672,21 +676,12 @@ module dao_factory::petra {
         assert!(option::is_some(&supply_opt), error::invalid_argument(E_NO_SUPPLY_TRACKING));
         let current_supply = *option::borrow(&supply_opt);
 
-        let dynamic_initial_emission = math::apply_ppm(current_supply, config.default_initial_emission_ppm);
-        let dynamic_tail_emission = math::apply_ppm(current_supply, config.default_tail_emission_ppm);
         let dynamic_threshold = math::compute_dynamic_threshold(current_supply, config.default_proposal_threshold_ppm);
 
         let dao_signer = ledger::generate_signer(dao_address);
         charter::update_config(&dao_signer, 6, dynamic_threshold);
 
-        jubilee::initialize(
-            &dao_signer,
-            mint_ref,
-            dynamic_initial_emission,
-            config.default_decay_bps,
-            dynamic_tail_emission,
-            config.default_gauge_split_bps
-        );
+        init_jubilee_internal(&dao_signer, mint_ref, config, current_supply);
 
         charter::set_active(launcher_signer, dao_address);
     }
@@ -759,5 +754,28 @@ module dao_factory::petra {
 
     fun emit_dao_created(creator: address, dao_address: address, governance_token: address, name: String, is_inflationary: bool) {
         event::emit(DaoCreated { creator, dao_address, governance_token, name, is_inflationary });
+    }
+
+    // Shared by create_dao_inflationary_internal and activate_dao_inflationary.
+    fun init_jubilee_internal(dao_signer: &signer, mint_ref: MintRef, config: &FactoryConfig, current_supply: u128) {
+        jubilee::initialize(
+            dao_signer,
+            mint_ref,
+            math::apply_ppm(current_supply, config.default_initial_emission_ppm),
+            config.default_decay_bps,
+            math::apply_ppm(current_supply, config.default_tail_emission_ppm),
+            config.default_gauge_split_bps
+        );
+    }
+
+    // SECURITY: the caller must be an approved launcher AND the launcher
+    // registered for THIS DAO (charter binds it at creation).
+    fun assert_launcher_of_dao(launcher_signer: &signer, dao_address: address) acquires LauncherRegistry {
+        let launcher_addr = std::signer::address_of(launcher_signer);
+        assert_launcher(launcher_addr);
+        assert!(
+            charter::get_launcher_address(dao_address) == launcher_addr,
+            std::error::permission_denied(E_UNAUTHORIZED_LAUNCHER)
+        );
     }
 }

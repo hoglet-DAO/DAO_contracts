@@ -131,16 +131,6 @@ module dao_factory::ledger {
         true
     }
 
-    // Only the DAO itself (via a passed proposal script) can deposit a capability into its vault.
-    public fun deposit_capability(dao_signer: &signer, signer_cap: SignerCapability, label: String) acquires DaoState {
-        assert!(is_valid_label(&label), error::invalid_argument(E_INVALID_LABEL));
-        let dao_address = signer::address_of(dao_signer);
-        let state = borrow_global_mut<DaoState>(dao_address);
-        let target_address = account::get_signer_capability_address(&signer_cap);
-        smart_table::add(&mut state.capabilities, target_address, signer_cap);
-        smart_table::add(&mut state.account_labels, target_address, label);
-    }
-    
     #[view]
     public fun has_capability(dao_address: address, target_address: address): bool acquires DaoState {
         if (!exists<DaoState>(dao_address)) return false;

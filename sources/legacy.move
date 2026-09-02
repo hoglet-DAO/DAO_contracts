@@ -265,19 +265,6 @@ module dao_factory::legacy {
         scan::upsert_registry_snapshot(&mut history.snapshots, pilgrim::now(), current_total);
     }
 
-    // Deposits SupraCoin or FungibleAsset in the DAO rewards vault (auto-compounding).
-    // Can only be called by harvest.
-    public(friend) fun inject_bribes(dao_address: address, amount: u64) acquires VeTokenRegistry {
-        let registry = borrow_global_mut<VeTokenRegistry>(dao_address);
-        // FIX (audit10 C3): same invariant as inject_rebase without a
-        // TaxFreeRouter nothing can ever withdraw from rebase_store, so the
-        // accumulator must not grow (this function moves no FA itself; the
-        // caller is responsible for the funds).
-        if (registry.total_locked > 0 && amount > 0 && dao_factory::tax_router::has_tax_free_router(dao_address)) {
-            registry.acc_rebase_per_share = math::add_per_share(amount, registry.total_locked, registry.acc_rebase_per_share);
-        };
-    }
-
     fun compound_rebase_internal(
         owner: &signer,
         obj_addr: address,
@@ -374,7 +361,13 @@ module dao_factory::legacy {
     }
 
     public entry fun compound(caller: &signer, legacy_addr: address) acquires VeToken, VeTokenRegistry, VeTokenRefs {
-        let (owner_addr, _) = prepare_and_compound(caller, legacy_addr);
+        // FIX (audit10 #12): compound extracts harvest rewards + rebase, so
+        // it must enforce the blacklist exactly like claim_rewards
+        // (withdraw/merge stay unguarded on purpose: exiting users recover
+        // their principal + accrued).
+        let (owner_addr, legacy_obj) = verify_owner_and_get_legacy(caller, legacy_addr);
+        assert_not_blacklisted(get_dao_address(legacy_obj), owner_addr);
+        let (_, _) = prepare_and_compound(caller, legacy_addr);
         let obj_addr = legacy_addr;
         let ve_data = borrow_global_mut<VeToken>(obj_addr);
         
@@ -468,7 +461,11 @@ module dao_factory::legacy {
         additional_epochs: u64,
     ) acquires VeToken, VeTokenRegistry, VeTokenRefs {
         assert!(additional_epochs >= 1, error::invalid_argument(E_INVALID_EXTEND));
-        let (owner_addr, dao_address) = prepare_and_compound(owner, legacy_addr);
+        // FIX (audit10 #12): extend extracts pending rewards (via compound)
+        // before extending, so it enforces the blacklist like claim_rewards.
+        let (owner_addr, legacy_obj) = verify_owner_and_get_legacy(owner, legacy_addr);
+        assert_not_blacklisted(get_dao_address(legacy_obj), owner_addr);
+        let (_, dao_address) = prepare_and_compound(owner, legacy_addr);
         sentinel::assert_not_paused(dao_address);
 
         let obj_addr = legacy_addr;

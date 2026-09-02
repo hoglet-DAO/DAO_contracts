@@ -263,10 +263,15 @@ module dao_factory::zeal {
         let is_delegate = legacy::is_delegate(ve_token_obj, voter_addr);
         assert!(is_owner || is_delegate, error::permission_denied(E_NOT_OWNER));
 
-        // FIX (audit10 M3): blacklisted voters or delegators must not vote
-        // (internal flows bypass the token's dispatch hooks).
+        // FIX (audit10 M3): internal flows bypass the token's dispatch hooks
+        // (TaxFreeCap), so the blacklist must be enforced explicitly.
+        // FIX (audit10 #2): the delegator check applies ONLY to delegated
+        // votes (see witness::cast_vote) checking it for owners would
+        // freeze veNFTs bought from blacklisted sellers on secondary markets.
         legacy::assert_not_blacklisted(dao_address, voter_addr);
-        legacy::assert_not_blacklisted(dao_address, legacy::get_delegator(ve_token_obj));
+        if (!is_owner) {
+            legacy::assert_not_blacklisted(dao_address, legacy::get_delegator(ve_token_obj));
+        };
         
         assert!(!legacy::is_expired(ve_token_obj), error::invalid_state(E_LOCK_EXPIRED));
         assert!(legacy::get_dao_address(ve_token_obj) == dao_address, error::invalid_argument(E_NOT_AUTHORIZED));

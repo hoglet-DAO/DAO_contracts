@@ -119,10 +119,15 @@ module dao_factory::witness {
 
         // FIX (audit9 M-2): internal flows bypass the token's dispatch hooks
         // (TaxFreeCap), so the blacklist must be enforced explicitly. Block
-        // voting when either the account exercising the power or the owner
-        // that granted the delegation is blacklisted.
+        // voting when the account exercising the power is blacklisted.
+        // FIX (audit10 #2): the delegator check applies ONLY to delegated
+        // votes  `delegator` is not cleared on transfer, so checking it for
+        // owners would freeze the voting power of veNFTs bought on secondary
+        // markets from blacklisted sellers.
         legacy::assert_not_blacklisted(dao_address, voter_addr);
-        legacy::assert_not_blacklisted(dao_address, legacy::get_delegator(ve_token_obj));
+        if (!is_owner) {
+            legacy::assert_not_blacklisted(dao_address, legacy::get_delegator(ve_token_obj));
+        };
 
         // ANTI-EXPLOIT: Ensure the veToken being used belongs to this DAO
         assert!(
