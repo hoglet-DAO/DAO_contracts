@@ -4,7 +4,11 @@ module dao_factory::tax_router {
     friend dao_factory::restore;
     friend dao_factory::foundry;
 
+    use std::error;
+    use std::signer;
     use dao_tokens::smart_token;
+
+    const E_NOT_STORE_OWNER: u64 = 1;
 
     struct TaxFreeRouter has key {
         cap: smart_token::TaxFreeCap,
@@ -23,11 +27,24 @@ module dao_factory::tax_router {
         exists<TaxFreeRouter>(dao_address)
     }
 
+    /// Withdraws `amount` from `store` using the DAO's cap (bypasses the
+    /// token's dispatch hooks).
+    ///
+    /// FIX (audit9 H-2) hardening: `authority` must OWN `store`. The cap
+    /// alone can withdraw from ANY store of the DAO token, so without this
+    /// check a buggy or malicious future friend module could drain third
+    /// parties. Invariant for new call sites: only pass the signer of the
+    /// store's owner (the tx user, or a protocol object via its ExtendRef).
     public(friend) fun withdraw_tax_free(
         dao_address: address,
+        authority: &signer,
         store: supra_framework::object::Object<supra_framework::fungible_asset::FungibleStore>,
         amount: u64
     ): supra_framework::fungible_asset::FungibleAsset acquires TaxFreeRouter {
+        assert!(
+            supra_framework::object::owner(store) == signer::address_of(authority),
+            error::permission_denied(E_NOT_STORE_OWNER)
+        );
         let router = borrow_global<TaxFreeRouter>(dao_address);
         smart_token::withdraw_tax_free(&router.cap, store, amount)
     }

@@ -63,6 +63,9 @@ module dao_factory::legacy {
         
         // Permission to create NFTs
         creator_extend_ref: ExtendRef,
+        // FIX (audit9 H-2): ExtendRef of the rebase sub-object (owner of
+        // rebase_store) so compound can prove store authority to tax_router.
+        rebase_extend_ref: ExtendRef,
         // Counter to name NFTs (e.g. "veAERO Position #1")
         mint_count: u64,
         // Name of the dynamic collection (e.g. "Governance of Aerodrome")
@@ -198,7 +201,10 @@ module dao_factory::legacy {
             acc_rebase_per_share: 0,
             rebase_store,
             token_metadata,
-            creator_extend_ref,
+            // FIX (audit9 H-2): the rebase object is the owner of rebase_store;
+        // keeping its ExtendRef lets compound prove authority to tax_router.
+        rebase_extend_ref: object::generate_extend_ref(&constructor_ref),
+        creator_extend_ref,
             mint_count: 0,
             collection_name,
             token_symbol,
@@ -303,7 +309,10 @@ module dao_factory::legacy {
             // INVARIANT (audit10 C3): for plain-FA DAOs acc_rebase_per_share
             // is hard 0 (both injectors are gated), so pending is always 0
             // here and rebase_store is never touched without the cap.
-            transfer_tax_free(ve_data.dao_address, owner, registry.rebase_store, store, pending);
+            // FIX (audit9 H-2): the rebase object owns rebase_store sign
+            // with it so tax_router's ownership check passes.
+            let rebase_signer = object::generate_signer_for_extending(&registry.rebase_extend_ref);
+            transfer_tax_free(ve_data.dao_address, &rebase_signer, registry.rebase_store, store, pending);
 
             ve_data.locked_amount = ve_data.locked_amount + pending;
             registry.total_locked = registry.total_locked + pending;
@@ -542,15 +551,16 @@ module dao_factory::legacy {
             move_from<VeTokenRefs>(obj_addr);
 
         let store = object::address_to_object<FungibleStore>(obj_addr);
+        // The ve object owns its store; its signer proves authority for both
+        // routes (the extend_ref was moved_from above and remains valid
+        // until object::delete below).
+        let obj_signer = object::generate_signer_for_extending(&extend_ref);
 
         // FIX (audit10 C3): with a TaxFreeRouter the cap path bypasses the
-        // dispatch hooks; plain-FA DAOs sign with the ve object itself, which
-        // owns its store (the extend_ref was moved_from above and remains
-        // valid until object::delete below).
+        // dispatch hooks; plain-FA DAOs use the normal owner-signed flow.
         let fa = if (dao_factory::tax_router::has_tax_free_router(dao_address)) {
-            dao_factory::tax_router::withdraw_tax_free(dao_address, store, locked_amount)
+            dao_factory::tax_router::withdraw_tax_free(dao_address, &obj_signer, store, locked_amount)
         } else {
-            let obj_signer = object::generate_signer_for_extending(&extend_ref);
             fungible_asset::withdraw(&obj_signer, store, locked_amount)
         };
 
@@ -682,6 +692,12 @@ module dao_factory::legacy {
 
         let obj_addr = legacy_addr;
         let ve_data = borrow_global_mut<VeToken>(obj_addr);
+        // FIX (audit9 M-2): a blacklisted account must not exercise governance
+        // rights, including re-routing its existing voting power via
+        // delegation. The delegate must not be blacklisted either (defense in
+        // depth; vote-time guards would also catch it).
+        assert_not_blacklisted(ve_data.dao_address, owner_addr);
+        assert_not_blacklisted(ve_data.dao_address, delegate_addr);
         
         let old_delegate = ve_data.delegate;
         ve_data.delegate = option::some(delegate_addr);
@@ -906,7 +922,7 @@ module dao_factory::legacy {
     /// `owner` must own `from_store` (only needed by the fallback branch).
     fun transfer_tax_free(dao_address: address, owner: &signer, from_store: Object<FungibleStore>, to_store: Object<FungibleStore>, amount: u64) {
         let fa = if (dao_factory::tax_router::has_tax_free_router(dao_address)) {
-            dao_factory::tax_router::withdraw_tax_free(dao_address, from_store, amount)
+            dao_factory::tax_router::withdraw_tax_free(dao_address, owner, from_store, amount)
         } else {
             fungible_asset::withdraw(owner, from_store, amount)
         };

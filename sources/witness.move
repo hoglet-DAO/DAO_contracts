@@ -117,6 +117,13 @@ module dao_factory::witness {
         let is_delegate = legacy::is_delegate(ve_token_obj, voter_addr);
         assert!(is_owner || is_delegate, error::permission_denied(E_NOT_AUTHORIZED));
 
+        // FIX (audit9 M-2): internal flows bypass the token's dispatch hooks
+        // (TaxFreeCap), so the blacklist must be enforced explicitly. Block
+        // voting when either the account exercising the power or the owner
+        // that granted the delegation is blacklisted.
+        legacy::assert_not_blacklisted(dao_address, voter_addr);
+        legacy::assert_not_blacklisted(dao_address, legacy::get_delegator(ve_token_obj));
+
         // ANTI-EXPLOIT: Ensure the veToken being used belongs to this DAO
         assert!(
             legacy::get_dao_address(ve_token_obj) == dao_address, 

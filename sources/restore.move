@@ -228,7 +228,7 @@ module dao_factory::restore {
         // apply, same as any user transfer).
         let use_cap = use_cap_route(dao_address, token_addr);
         let fa = if (use_cap) {
-            dao_factory::tax_router::withdraw_tax_free(dao_address, user_store, amount)
+            dao_factory::tax_router::withdraw_tax_free(dao_address, depositor, user_store, amount)
         } else {
             supra_framework::fungible_asset::withdraw(depositor, user_store, amount)
         };
@@ -314,10 +314,10 @@ module dao_factory::restore {
             // (BribeRegistry keeps its ExtendRef for exactly this) and deposit
             // through the normal flow.
             let use_cap = use_cap_route(dao_address, token_addr);
+            let vault_signer = object::generate_signer_for_extending(&registry.vault_extend_ref);
             let fa = if (use_cap) {
-                dao_factory::tax_router::withdraw_tax_free(dao_address, vault_store, share)
+                dao_factory::tax_router::withdraw_tax_free(dao_address, &vault_signer, vault_store, share)
             } else {
-                let vault_signer = object::generate_signer_for_extending(&registry.vault_extend_ref);
                 supra_framework::fungible_asset::withdraw(&vault_signer, vault_store, share)
             };
             if (use_cap) {
