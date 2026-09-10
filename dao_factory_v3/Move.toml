@@ -1,0 +1,37 @@
+[package]
+name = "hoglet_dao"
+version = "1.0.0"
+authors = []
+
+[addresses]
+
+COLD = "0x738ba0cff4cbecdf01cdb22b4b49c9d226677d798f90514baed32d937fc1acee"
+dao_factory = "0x738ba0cff4cbecdf01cdb22b4b49c9d226677d798f90514baed32d937fc1acee"
+
+[dev-addresses]
+
+[dependencies.SupraFramework]
+git = "https://github.com/Entropy-Foundation/aptos-core.git"
+rev = "dev"
+subdir = "aptos-move/framework/supra-framework"
+
+[dependencies.AptosTokenObjects]
+git = "https://github.com/Entropy-Foundation/aptos-core.git"
+rev = "dev"
+subdir = "aptos-move/framework/aptos-token-objects"
+
+[dependencies.dfmm_framework]
+git = "https://github.com/hoglet-DAO/POEL_contracts.git"
+rev = "main"
+subdir = "testnet"
+
+[dependencies.dao_libs]
+local = "../dao_libs"
+
+[dependencies.dao_tokens]
+local = "../dao_tokens"
+
+[dependencies.dao_tax_router]
+local = "../dao_tax_router"
+
+[dev-dependencies]

@@ -1,0 +1,16 @@
+[package]
+name = "dao_tokens"
+version = "1.0.0"
+authors = []
+
+[addresses]
+
+SPIRIT = "0x90efa5e03f87ae8feb62ce489942e0b2837b258772d06b20597ea0f6114a96db"
+dao_tokens = "0x90efa5e03f87ae8feb62ce489942e0b2837b258772d06b20597ea0f6114a96db"
+
+[dev-addresses]
+
+[dependencies.SupraFramework]
+git = "https://github.com/Entropy-Foundation/aptos-core.git"
+rev = "dev"
+subdir = "aptos-move/framework/supra-framework"

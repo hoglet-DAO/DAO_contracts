@@ -1,0 +1,14 @@
+[package]
+name = "dao_tax_router"
+version = "1.0.0"
+
+[addresses]
+dao_factory = "0x90efa5e03f87ae8feb62ce489942e0b2837b258772d06b20597ea0f6114a96db"
+
+[dependencies.SupraFramework]
+git = "https://github.com/Entropy-Foundation/aptos-core.git"
+rev = "dev"
+subdir = "aptos-move/framework/supra-framework"
+
+[dependencies.dao_tokens]
+local = "../dao_tokens"
