@@ -29,13 +29,27 @@ module dao_factory::tax_router {
         cap: smart_token::TaxFreeCap,
         routers: vector<address>
     ) {
+        // [FIX (audit13 R-1c)] Idempotent dedup of the INITIAL list: callers
+        // compose it from protocol-derived addresses (curve pool, launcher
+        // resource account, DAO master) and an overlap is a benign no-op, not
+        // an error. The previous pairwise consult compared each element
+        // against the WHOLE vector (including itself) and aborted every
+        // non-empty registration E_ROUTER_ALREADY_REGISTERED on any
+        // migration. Dedupe silently; ADD_router keeps the strict dup abort.
+        // SECURITY: no semantic change the signer-proof gate, the
+        // owner-check, the move_to-already-exists guard and add_router's
+        // assert are untouched.
+        let deduped = vector::empty<address>();
         let i = 0;
         let n = vector::length(&routers);
         while (i < n) {
-            assert!(!contains_router(&routers, *vector::borrow(&routers, i)), error::invalid_argument(E_ROUTER_ALREADY_REGISTERED));
+            let elem = *vector::borrow(&routers, i);
+            if (!contains_router(&deduped, elem)) {
+                vector::push_back(&mut deduped, elem);
+            };
             i = i + 1;
         };
-        move_to(dao_signer, TaxFreeRouter { cap, routers });
+        move_to(dao_signer, TaxFreeRouter { cap, routers: deduped });
     }
 
     fun contains_router(routers: &vector<address>, addr: address): bool {
