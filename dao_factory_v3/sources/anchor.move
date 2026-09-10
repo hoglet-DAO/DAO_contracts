@@ -187,15 +187,15 @@ module dao_factory::anchor {
                 assert!(charter::is_inflationary(dao_address), error::invalid_state(E_NOT_INFLATIONARY));
                 let token_metadata = object::address_to_object<supra_framework::fungible_asset::Metadata>(target_address);
                 dao_factory::restore::set_whitelist(&dao_signer, token_metadata, bool_val == 1);
-            } else if (setting_type == 2) { // Smart Token: Update Treasury Address
+            } else if (setting_type >= 2 && setting_type <= 4) { // Smart Token settings
                 let token_addr = dao_factory::legacy::get_token_metadata_address(dao_address);
-                smart_token::update_treasury_address(token_addr, &dao_signer, target_address);
-            } else if (setting_type == 3) { // Smart Token: Update Blacklist
-                let token_addr = dao_factory::legacy::get_token_metadata_address(dao_address);
-                smart_token::update_blacklist(token_addr, &dao_signer, target_address, bool_val == 1);
-            } else if (setting_type == 4) { // Smart Token: Set Exemption (Whitelist)
-                let token_addr = dao_factory::legacy::get_token_metadata_address(dao_address);
-                smart_token::set_exemption(token_addr, &dao_signer, target_address, bool_val == 1);
+                if (setting_type == 2) {
+                    smart_token::update_treasury_address(token_addr, &dao_signer, target_address);
+                } else if (setting_type == 3) {
+                    smart_token::update_blacklist(token_addr, &dao_signer, target_address, bool_val == 1);
+                } else {
+                    smart_token::set_exemption(token_addr, &dao_signer, target_address, bool_val == 1);
+                };
             } else {
                 abort error::invalid_argument(E_INVALID_ACTION)
             };

@@ -529,7 +529,7 @@ module dao_factory::zeal {
         if (!smart_table::contains(&registry.claimed_emissions, pilgrim)) return false;
         let epoch_claims = smart_table::borrow(&registry.claimed_emissions, pilgrim);
         if (!smart_table::contains(epoch_claims, gauge_id)) return false;
-        *smart_table::borrow(epoch_claims, gauge_id)
+        true
     }
 
     #[view]

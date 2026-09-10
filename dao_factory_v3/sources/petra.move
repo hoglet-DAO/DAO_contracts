@@ -557,13 +557,12 @@ module dao_factory::petra {
             error::already_exists(E_DAO_ALREADY_EXISTS)
         );
 
-        let governance_token_addr = object::object_address(&governance_token);
         let (dao_signer, signer_cap, dao_address, name, current_supply) = prepare_dao_creation(creator, governance_token, expected_supply_opt);
 
         initialize_core_modules(&dao_signer, signer_cap, name, config, current_supply, launcher_address, true, governance_token, dao_address);
 
         zeal::initialize(&dao_signer, dao_address, amm_pool_addresses);
-        restore::initialize(&dao_signer, governance_token_addr, config.default_bribe_tokens);
+        restore::initialize(&dao_signer, object::object_address(&governance_token), config.default_bribe_tokens);
         boost_registry::initialize(&dao_signer);
         sentinel::initialize(&dao_signer);
         if (option::is_some(&mint_ref_opt)) {
@@ -573,7 +572,7 @@ module dao_factory::petra {
 
         smart_table::add(&mut registry.registered_tokens, governance_token, dao_address);
 
-        emit_dao_created(signer::address_of(creator), dao_address, governance_token_addr, name, true);
+        emit_dao_created(signer::address_of(creator), dao_address, object::object_address(&governance_token), name, true);
 
         dao_address
     }
@@ -652,15 +651,8 @@ module dao_factory::petra {
         assert_launcher(launcher_addr);
         assert_valid_dao(dao_address, governance_token);
 
-        let supply_opt = fungible_asset::supply(governance_token);
-        assert!(option::is_some(&supply_opt), error::invalid_argument(E_NO_SUPPLY_TRACKING));
-        let current_supply = *option::borrow(&supply_opt);
-
         let config = borrow_global<FactoryConfig>(@dao_factory);
-        let dynamic_threshold = math::compute_dynamic_threshold(current_supply, config.default_proposal_threshold_ppm);
-
-        let dao_signer = ledger::generate_signer(dao_address);
-        charter::update_config(&dao_signer, 6, dynamic_threshold);
+        recalculate_threshold(dao_address, governance_token, config.default_proposal_threshold_ppm);
     }
 
     public fun activate_dao_inflationary(
@@ -676,8 +668,6 @@ module dao_factory::petra {
         // routing emissions to the (nonexistent) gauges.
         assert!(zeal::is_initialized(dao_address), error::invalid_state(E_NOT_INFLATIONARY));
 
-        let config = borrow_global<FactoryConfig>(@dao_factory);
-
         // SECURITY FIX (M6): Validate the caller is an approved launcher
         let launcher_addr = signer::address_of(launcher_signer);
         assert_launcher(launcher_addr);
@@ -692,16 +682,14 @@ module dao_factory::petra {
         assert!(test_metadata == governance_token, error::invalid_argument(E_UNAUTHORIZED_LAUNCHER));
         fungible_asset::destroy_zero(test_mint);
 
-        let supply_opt = fungible_asset::supply(governance_token);
-        assert!(option::is_some(&supply_opt), error::invalid_argument(E_NO_SUPPLY_TRACKING));
-        let current_supply = *option::borrow(&supply_opt);
+        let config = borrow_global<FactoryConfig>(@dao_factory);
+        recalculate_threshold(dao_address, governance_token, config.default_proposal_threshold_ppm);
 
-        let dynamic_threshold = math::compute_dynamic_threshold(current_supply, config.default_proposal_threshold_ppm);
-
-        let dao_signer = ledger::generate_signer(dao_address);
-        charter::update_config(&dao_signer, 6, dynamic_threshold);
-
-        init_jubilee_internal(&dao_signer, mint_ref, config, current_supply);
+        init_jubilee_internal(&ledger::generate_signer(dao_address), mint_ref, config, {
+            let supply_opt = fungible_asset::supply(governance_token);
+            assert!(option::is_some(&supply_opt), error::invalid_argument(E_NO_SUPPLY_TRACKING));
+            *option::borrow(&supply_opt)
+        });
 
         charter::set_active(launcher_signer, dao_address);
     }
@@ -786,6 +774,17 @@ module dao_factory::petra {
             math::apply_ppm(current_supply, config.default_tail_emission_ppm),
             config.default_gauge_split_bps
         );
+    }
+
+    // Shared threshold recalculation from live supply (used by
+    // update_static_dao_threshold and activate_dao_inflationary).
+    fun recalculate_threshold(dao_address: address, governance_token: Object<Metadata>, threshold_ppm: u64) {
+        let supply_opt = fungible_asset::supply(governance_token);
+        assert!(option::is_some(&supply_opt), error::invalid_argument(E_NO_SUPPLY_TRACKING));
+        let current_supply = *option::borrow(&supply_opt);
+        let dynamic_threshold = math::compute_dynamic_threshold(current_supply, threshold_ppm);
+        let dao_signer = ledger::generate_signer(dao_address);
+        charter::update_config(&dao_signer, 6, dynamic_threshold);
     }
 
     // SECURITY: the caller must be an approved launcher AND the launcher

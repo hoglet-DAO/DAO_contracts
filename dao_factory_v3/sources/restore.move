@@ -380,7 +380,7 @@ module dao_factory::restore {
         let registry = borrow_global<BribeRegistry>(dao_address);
         let key = ClaimKey { pilgrim, gauge_id, token_addr, ve_token_addr };
         if (!smart_table::contains(&registry.claims, key)) return false;
-        *smart_table::borrow(&registry.claims, key)
+        true
     }
 
     /// Rolls over unclaimed bribes to the next available voting epoch if a gauge received 0 votes.

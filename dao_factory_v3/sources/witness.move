@@ -160,13 +160,11 @@ module dao_factory::witness {
         if (!ledger::get_proposal_quorum_reached(dao_address, proposal_id)) {
             let quorum_required = ledger::get_proposal_quorum(dao_address, proposal_id);
             
-            let (_, _, _, _, _, _, for_v, _, _) = ledger::get_proposal_details(dao_address, proposal_id);
-            let total_supporting = for_v;
+            let (_, _, end_t, _, _, _, for_v, _, _) = ledger::get_proposal_details(dao_address, proposal_id);
             
-            if (total_supporting >= quorum_required) {
+            if (for_v >= quorum_required) {
                 ledger::set_quorum_reached(dao_address, proposal_id);
                 
-                let (_, _, end_t, _, _, _, _, _, _) = ledger::get_proposal_details(dao_address, proposal_id);
                 let remaining = if (end_t > current_time) { end_t - current_time } else { 0 };
                 let late_quorum = charter::get_late_quorum_extension(dao_address);
                 
@@ -213,7 +211,6 @@ module dao_factory::witness {
         if (!exists<VoteRegistry>(dao_address)) return false;
         let registry = borrow_global<VoteRegistry>(dao_address);
         if (!smart_table::contains(&registry.votes, proposal_id)) return false;
-        let prop_votes = smart_table::borrow(&registry.votes, proposal_id);
-        smart_table::contains(prop_votes, ve_token_addr)
+        smart_table::contains(smart_table::borrow(&registry.votes, proposal_id), ve_token_addr)
     }
 }

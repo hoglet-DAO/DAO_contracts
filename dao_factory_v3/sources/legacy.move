@@ -372,13 +372,11 @@ module dao_factory::legacy {
         // it must enforce the blacklist exactly like claim_rewards
         // (withdraw/merge stay unguarded on purpose: exiting users recover
         // their principal + accrued).
-        let (owner_addr, legacy_obj) = verify_owner_and_get_legacy(caller, legacy_addr);
-        assert_not_blacklisted(get_dao_address(legacy_obj), owner_addr);
-        let (_, _) = prepare_and_compound(caller, legacy_addr);
-        let obj_addr = legacy_addr;
-        let ve_data = borrow_global_mut<VeToken>(obj_addr);
+        let (owner_addr, dao_address) = prepare_and_compound(caller, legacy_addr);
+        assert_not_blacklisted(dao_address, owner_addr);
+        let ve_data = borrow_global_mut<VeToken>(legacy_addr);
         
-        update_svg_uri(obj_addr, ve_data);
+        update_svg_uri(legacy_addr, ve_data);
     }
 
     public fun create_lock(
@@ -408,14 +406,10 @@ module dao_factory::legacy {
 
         // 1. Create the NFT Object
         let (creator_signer, obj_signer, obj_addr, constructor_ref) = create_ve_nft_object(registry);
-        let mutator_ref = token::generate_mutator_ref(&constructor_ref);
         
         // Ensure adding to total before generating SVG to correctly calculate the Share %
         registry.total_locked = registry.total_locked + amount;
         update_total_locked_history(dao_address, registry.total_locked);
-        
-        let dynamic_uri = get_or_generate_uri(obj_addr, registry);
-        token::set_uri(&mutator_ref, dynamic_uri);
 
         // Deposit into the Object's store.
         let store_constructor = fungible_asset::create_store(&constructor_ref, registry.token_metadata);
@@ -438,10 +432,14 @@ module dao_factory::legacy {
             last_voted_epoch: 0,
         });
 
+        let mutator_ref = token::generate_mutator_ref(&constructor_ref);
+        let dynamic_uri = get_or_generate_uri(obj_addr, registry);
+        token::set_uri(&mutator_ref, dynamic_uri);
+
         move_to(&obj_signer, VeTokenRefs {
             extend_ref: object::generate_extend_ref(&constructor_ref),
             delete_ref: object::generate_delete_ref(&constructor_ref),
-            mutator_ref: token::generate_mutator_ref(&constructor_ref),
+            mutator_ref,
         });
 
         // (total_locked was already increased above)
@@ -475,9 +473,7 @@ module dao_factory::legacy {
         let (_, dao_address) = prepare_and_compound(owner, legacy_addr);
         sentinel::assert_not_paused(dao_address);
 
-        let obj_addr = legacy_addr;
-
-        let ve_data = borrow_global_mut<VeToken>(obj_addr);
+        let ve_data = borrow_global_mut<VeToken>(legacy_addr);
         let current_epoch = pilgrim::now();
         
         let old_end_epoch = ve_data.end_epoch;
@@ -494,9 +490,9 @@ module dao_factory::legacy {
         upsert_snapshot(ve_data);
 
         // Update SVG to reflect the new lock time
-        update_svg_uri(obj_addr, ve_data);
+        update_svg_uri(legacy_addr, ve_data);
 
-        event::emit(LockExtended { owner: owner_addr, legacy: obj_addr, old_end_epoch, new_end_epoch });
+        event::emit(LockExtended { owner: owner_addr, legacy: legacy_addr, old_end_epoch, new_end_epoch });
     }
 
     public entry fun increase_amount(
@@ -508,9 +504,7 @@ module dao_factory::legacy {
         let (owner_addr, dao_address) = prepare_and_compound(owner, legacy_addr);
         sentinel::assert_not_paused(dao_address);
 
-        let obj_addr = legacy_addr;
-
-        let ve_data = borrow_global_mut<VeToken>(obj_addr);
+        let ve_data = borrow_global_mut<VeToken>(legacy_addr);
         // FIX (audit10 M3): no voting-power accumulation for blacklisted
         // accounts (see create_lock).
         assert_not_blacklisted(ve_data.dao_address, owner_addr);
@@ -520,7 +514,7 @@ module dao_factory::legacy {
         assert!(ve_data.end_epoch > current_epoch, error::invalid_state(E_LOCK_EXPIRED));
 
         let user_store = primary_fungible_store::primary_store(owner_addr, ve_data.token_metadata);
-        let store = object::address_to_object<FungibleStore>(obj_addr);
+        let store = object::address_to_object<FungibleStore>(legacy_addr);
         transfer_tax_free(ve_data.dao_address, owner, user_store, store, additional_amount);
 
         let new_total = ve_data.locked_amount + additional_amount;
@@ -531,14 +525,14 @@ module dao_factory::legacy {
         ve_data.rebase_debt = math::calculate_rebase_debt(new_total, registry.acc_rebase_per_share);
 
         // Checkpoint for rewards (Must be called AFTER updating amount)
-        harvest::checkpoint(ve_data.dao_address, obj_addr, new_total);
+        harvest::checkpoint(ve_data.dao_address, legacy_addr, new_total);
 
         upsert_snapshot(ve_data);
 
         // Update SVG to reflect the new amount
-        update_svg_uri(obj_addr, ve_data);
+        update_svg_uri(legacy_addr, ve_data);
 
-        event::emit(AmountIncreased { owner: owner_addr, legacy: obj_addr, added_amount: additional_amount, new_total });
+        event::emit(AmountIncreased { owner: owner_addr, legacy: legacy_addr, added_amount: additional_amount, new_total });
     }
 
     // Shared VeToken destruction used by `withdraw` and `merge`: removes the
@@ -579,11 +573,9 @@ module dao_factory::legacy {
         legacy_addr: address,
     ) acquires VeToken, VeTokenRefs, VeTokenRegistry, TotalLockedHistory {
         let (owner_addr, dao_address) = prepare_and_compound(owner, legacy_addr);
-        let obj_addr = legacy_addr;
-        let current_epoch = pilgrim::now();
-        assert!(current_epoch >= borrow_global<VeToken>(legacy_addr).end_epoch, error::invalid_state(E_STILL_LOCKED));
+        assert!(pilgrim::now() >= borrow_global<VeToken>(legacy_addr).end_epoch, error::invalid_state(E_STILL_LOCKED));
 
-        let (locked_amount, _, _, _, fa) = burn_ve_token_and_withdraw(obj_addr);
+        let (locked_amount, _, _, _, fa) = burn_ve_token_and_withdraw(legacy_addr);
 
         let registry = borrow_global_mut<VeTokenRegistry>(dao_address);
         registry.total_locked = registry.total_locked - locked_amount;
@@ -593,9 +585,9 @@ module dao_factory::legacy {
         dao_factory::tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), user_store, fa);
 
         // Checkpoint for rewards (0 because everything was withdrawn)
-        harvest::checkpoint(dao_address, obj_addr, 0);
+        harvest::checkpoint(dao_address, legacy_addr, 0);
 
-        event::emit(Withdrawn { owner: owner_addr, legacy: obj_addr, amount: locked_amount });
+        event::emit(Withdrawn { owner: owner_addr, legacy: legacy_addr, amount: locked_amount });
     }
 
     public entry fun merge(
@@ -613,9 +605,9 @@ module dao_factory::legacy {
             let from_ve_data = borrow_global<VeToken>(from_legacy_addr);
             let into_ve_data = borrow_global<VeToken>(into_legacy_addr);
             assert!(from_ve_data.dao_address == into_ve_data.dao_address, error::invalid_argument(E_INVALID_OBJECT));
-            assert!(from_ve_data.end_epoch > pilgrim::now(), error::invalid_state(E_LOCK_EXPIRED));
-            
             let current_epoch = pilgrim::now();
+            assert!(from_ve_data.end_epoch > current_epoch, error::invalid_state(E_LOCK_EXPIRED));
+            
             let check_epoch = if (current_epoch > 0) { current_epoch - 1 } else { 0 };
             assert!(from_ve_data.last_voted_epoch < check_epoch, error::invalid_state(E_VOTED_RECENTLY));
         };
@@ -661,7 +653,6 @@ module dao_factory::legacy {
 
             // Update rebase debt to prevent rebase drain exploit
             let registry = borrow_global_mut<VeTokenRegistry>(dao_address);
-            registry.total_locked = registry.total_locked; // Just keeping track
             update_total_locked_history(dao_address, registry.total_locked);
             into_ve_data.rebase_debt = math::calculate_rebase_debt(new_total, registry.acc_rebase_per_share);
 
@@ -889,15 +880,13 @@ module dao_factory::legacy {
     ) acquires VeToken, VeTokenRegistry {
         let (owner_addr, _) = verify_owner_and_get_legacy(owner, legacy_addr);
         
-        let obj_addr = legacy_addr;
-        
         {
-            let ve_data = borrow_global_mut<VeToken>(obj_addr);
+            let ve_data = borrow_global_mut<VeToken>(legacy_addr);
             // FIX (audit10 M3): blacklisted accounts must not extract
             // harvest rewards or rebase.
             assert_not_blacklisted(ve_data.dao_address, owner_addr);
             let registry = borrow_global_mut<VeTokenRegistry>(ve_data.dao_address);
-            compound_rebase_internal(owner, obj_addr, ve_data, registry);
+            compound_rebase_internal(owner, legacy_addr, ve_data, registry);
         };
     }
 

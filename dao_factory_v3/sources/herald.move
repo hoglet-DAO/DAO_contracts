@@ -18,7 +18,6 @@ module dao_factory::herald {
     use std::error;
     use aptos_std::smart_table::{Self, SmartTable};
 
-    use dfmm_framework::poel;
     
     use dao_factory::pilgrim;
     use dao_factory::ledger;
@@ -126,7 +125,7 @@ module dao_factory::herald {
             error::permission_denied(E_BELOW_THRESHOLD)
         );
 
-        let (_, voting_delay, voting_period, proposal_threshold, _, _, _, _) = charter::get_dao_config_view(dao_address);
+        let (_, voting_delay, voting_period, proposal_threshold, quorum_num, quorum_den, super_quorum_threshold, _) = charter::get_dao_config_view(dao_address);
 
         // Read voting power in the PREVIOUS epoch (anti-flash-loan).
         let check_epoch = if (pilgrim::now() > 0) {
@@ -154,7 +153,6 @@ module dao_factory::herald {
         let ve_token_addr = object::object_address(&legacy);
 
         // Calculate dynamic quorum at the exact moment of proposal creation
-        let (_, _, _, _, quorum_num, quorum_den, super_quorum_threshold, _) = charter::get_dao_config_view(dao_address);
         // SECURITY FIX (M11): Use historical total_locked matching the check_epoch to prevent quorum griefing
         let total_locked = legacy::get_total_locked_at(dao_address, check_epoch);
         
