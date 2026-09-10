@@ -9,6 +9,8 @@ module dao_factory::tax_router {
     const E_NOT_STORE_OWNER: u64 = 1;
     const E_NOT_WHITELISTED_ROUTER: u64 = 2;
     const E_ROUTER_ALREADY_REGISTERED: u64 = 3;
+    const E_ROUTER_NOT_REGISTERED: u64 = 4;
+    const E_ROUTER_MASTER_UNREMOVABLE: u64 = 5;
 
     /// FIX (audit13 R-1) Signer-proof router registry: the TaxFree bypass is
     /// only reachable by modules holding the signer of a whitelisted protocol
@@ -85,6 +87,29 @@ module dao_factory::tax_router {
         let router = borrow_global_mut<TaxFreeRouter>(routers_addr);
         assert!(!contains_router(&router.routers, router_address), error::invalid_argument(E_ROUTER_ALREADY_REGISTERED));
         vector::push_back(&mut router.routers, router_address);
+    }
+
+    /// FIX (AUDIT13 #4) Revocation path: the DAO MASTER signer can remove any
+    /// registered router (e.g. deprecating a launchpad integration, rotating
+    /// upgrades). Re-adding after removal is allowed (add_router's
+    /// duplicate-check only guards the CURRENT vector). Removal is always
+    /// possible because add/remove are both anchored to the DAO master
+    /// signer, which the DAO's own governance/infra retains for its
+    /// lifetime no router can become permanently un-revocable.
+    public fun remove_router(dao_signer: &signer, router_address: address) acquires TaxFreeRouter {
+        let routers_addr = signer::address_of(dao_signer);
+        assert!(router_address != routers_addr, error::permission_denied(E_ROUTER_MASTER_UNREMOVABLE));
+        let router = borrow_global_mut<TaxFreeRouter>(routers_addr);
+        assert!(contains_router(&router.routers, router_address), error::not_found(E_ROUTER_NOT_REGISTERED));
+        let i = 0;
+        let n = vector::length(&router.routers);
+        while (i < n) {
+            if (*vector::borrow(&router.routers, i) == router_address) {
+                vector::remove(&mut router.routers, i);
+                return
+            };
+            i = i + 1;
+        };
     }
 
     /// Withdraws `amount` from `store` using the DAO's cap (bypasses the
