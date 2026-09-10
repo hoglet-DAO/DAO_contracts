@@ -87,7 +87,17 @@ module dao_factory::harvest {
         if (total_locked > 0 && amount > 0) {
             let increment = (((amount as u256) * PRECISION / (total_locked as u256)) as u128);
             vault.acc_reward_per_share = vault.acc_reward_per_share + increment;
-            dispatchable_fungible_asset::deposit(vault.store, reward);
+            // [FIX (AUDIT13 #1)] Same tax-free route as legacy::inject_rebase:
+            // raw dispatch deposits charge buy_tax on the settled stream,
+            // desyncing the accumulator from the vault store. Smart-token DAOs
+            // route via the cap (DAO master signer = whitelisted router,
+            // audit13 R-1); plain-FA DAOs have no TaxFreeRouter resource and
+            // keep the plain deposit (no hooks exist for them).
+            if (dao_factory::tax_router::has_tax_free_router(dao_address)) {
+                dao_factory::tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), vault.store, reward);
+            } else {
+                dispatchable_fungible_asset::deposit(vault.store, reward);
+            };
         } else {
             // SECURITY FIX (VULN-06): mirror of legacy::inject_rebase. When no
             // one is locking, rewards deposited into the vault would be

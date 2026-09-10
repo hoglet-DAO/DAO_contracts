@@ -171,6 +171,12 @@ module dao_factory::charter {
             assert!(config_value * 100 / config.quorum_denominator >= 1, error::invalid_argument(E_INVALID_QUORUM)); // At least 1% quorum
         } else if (config_key == 2) {
             assert!(config_value >= config.quorum_numerator && config_value >= config.super_quorum_threshold, error::invalid_argument(E_INVALID_QUORUM));
+            // [FIX (AUDIT13 #8)] Re-apply the design floors after a denominator
+            // change: the 1% quorum and 50% super-quorum ratios must hold
+            // against the NEW denominator, otherwise governance could degrade
+            // itself below the floors imposed at initialize.
+            assert!(config.quorum_numerator * 100 / config_value >= 1, error::invalid_argument(E_INVALID_QUORUM));
+            assert!(config.super_quorum_threshold * 100 / config_value >= 50, error::invalid_argument(E_INVALID_QUORUM));
         } else if (config_key == 3) {
             assert_bounds(config_value, 0, MAX_DELAY_SECONDS, E_INVALID_DELAY);
         } else if (config_key == 4) {

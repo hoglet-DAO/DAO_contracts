@@ -232,7 +232,14 @@ module dao_factory::legacy {
         // (pending is always 0). Smart-token DAOs are unaffected.
         if (registry.total_locked > 0 && amount > 0 && dao_factory::tax_router::has_tax_free_router(dao_address)) {
             registry.acc_rebase_per_share = math::add_per_share(amount, registry.total_locked, registry.acc_rebase_per_share);
-            dispatchable_fungible_asset::deposit(registry.rebase_store, rebase_fa);
+            // [FIX (AUDIT13 #1)] Route through the DAO's TaxFreeCap instead of
+            // the raw dispatchable deposit: the deposit hook would skim
+            // buy_tax when the DAO activates taxes on its OWN token, charging
+            // the store less than the accumulator promises (insolvent
+            // rebase_store = permanent compound DoS). The DAO master signer
+            // is the router proof (registered at migration, audit13 R-1) 
+            // users can never produce it.
+            dao_factory::tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), registry.rebase_store, rebase_fa);
         } else {
             // SECURITY FIX (VULN-06): When no one is locking, rebase tokens
             // deposited into rebase_store would be stranded forever (the
