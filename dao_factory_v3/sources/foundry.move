@@ -16,6 +16,7 @@ module dao_factory::foundry {
     use std::vector;
     use aptos_token_objects::token;
     use dao_factory::pilgrim;
+    use dao_factory::ledger;
     use dao_factory::boost_registry;
     use dao_factory::table;
     use dao_factory::legacy;
@@ -559,6 +560,6 @@ module dao_factory::foundry {
         
         // Deposit to user (bypassing buy tax)
         let dest_store = primary_fungible_store::ensure_primary_store_exists(to, gauge.dao_token);
-        dao_factory::tax_router::deposit_tax_free(gauge.dao_address, dest_store, fa);
+        dao_factory::tax_router::deposit_tax_free(gauge.dao_address, &ledger::generate_signer(gauge.dao_address), dest_store, fa);
     }
 }

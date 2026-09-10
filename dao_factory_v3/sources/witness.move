@@ -18,6 +18,7 @@ module dao_factory::witness {
     use std::error;
     use supra_framework::timestamp;
     use supra_framework::event;
+    use supra_framework::object;
 
     use aptos_std::smart_table::{Self, SmartTable};
 
@@ -100,8 +101,8 @@ module dao_factory::witness {
         support: u8,
     ) acquires VoteRegistry {
         assert!(support <= 2, error::invalid_argument(E_INVALID_SUPPORT));
-        assert!(supra_framework::object::is_object(legacy_addr), error::invalid_argument(E_NOT_OBJECT));
-        let ve_token_obj = supra_framework::object::address_to_object<legacy::VeToken>(legacy_addr);
+        assert!(object::is_object(legacy_addr), error::invalid_argument(E_NOT_OBJECT));
+        let ve_token_obj = object::address_to_object<legacy::VeToken>(legacy_addr);
 
         // Sentinel: cast_vote is pausable
         sentinel::assert_not_paused(dao_address);
@@ -110,7 +111,7 @@ module dao_factory::witness {
         assert!(charter::is_active(dao_address), error::permission_denied(E_DAO_NOT_ACTIVE));
 
         let voter_addr = signer::address_of(voter);
-        let ve_addr = supra_framework::object::object_address(&ve_token_obj);
+        let ve_addr = object::object_address(&ve_token_obj);
 
         // The voter must be the owner of the veToken OR a registered delegate.
         // FIX (audit9 M-2 + audit10 M3 + audit10 #2): consolidated in legacy.

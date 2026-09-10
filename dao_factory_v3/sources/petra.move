@@ -495,7 +495,7 @@ module dao_factory::petra {
 
         charge_creation_fee(creator);
         let config = borrow_global<FactoryConfig>(@dao_factory);
-        create_dao_inflationary_internal(creator, governance_token, option::some(mint_ref), config, @0x0, option::none(), std::vector::empty<address>())
+        create_dao_inflationary_internal(creator, governance_token, option::some(mint_ref), config, @0x0, option::none(), vector::empty<address>())
     }
 
     public fun claim_token_for_launcher(
@@ -598,7 +598,7 @@ module dao_factory::petra {
     ) acquires LauncherRegistry {
         assert_launcher_of_dao(launcher_signer, dao_address);
         // Only inflationary DAOs (born with the zeal registry) have gauges.
-        assert!(zeal::is_initialized(dao_address), std::error::invalid_state(E_NOT_INFLATIONARY));
+        assert!(zeal::is_initialized(dao_address), error::invalid_state(E_NOT_INFLATIONARY));
 
         zeal::activate_gauge_by_staking_token(dao_address, staking_token_addr);
     }
@@ -606,6 +606,11 @@ module dao_factory::petra {
     /// Stores the TaxFreeCap produced by the launcher's migration flow into
     /// the DAO's account so tax_router can route internal DAO transfers
     /// tax-free (audit10 C1b/C2).
+    ///
+    /// FIX (audit13 R-1): `routers` registers the protocol objects (the
+    /// launchpad Pool) allowed to produce the signer-proof for tax-free
+    /// routes. Registered at creation, while the DAO resource signer is
+    /// available there is no post-registration signer path at all.
     ///
     /// SECURITY: double gate the caller must be an approved launcher AND
     /// the launcher registered for THIS DAO (charter binds it at creation).
@@ -616,11 +621,26 @@ module dao_factory::petra {
         launcher_signer: &signer,
         dao_address: address,
         cap: smart_token::TaxFreeCap,
+        routers: vector<address>,
     ) acquires LauncherRegistry {
         assert_launcher_of_dao(launcher_signer, dao_address);
         // Requires the DAO's resource signer: tax_router::store_tax_free_cap
         // does move_to(dao_signer, ...).
-        tax_router::store_tax_free_cap(&ledger::generate_signer(dao_address), cap);
+        tax_router::store_tax_free_cap(&ledger::generate_signer(dao_address), cap, routers);
+    }
+
+    /// FIX (audit13 R-2) Launched-after-migration registration: the launcher
+    /// whitelists a NEW bonding-curve Pool into an EARLIER DAO's TaxFreeRouter
+    /// (a later launch using that DAO's token as a QUOTE). Same identity
+    /// pattern as activate_dao: the caller must be the launcher bound to
+    /// THIS DAO at creation; the DAO master signer is produced internally.
+    public fun add_tax_router(
+        launcher_signer: &signer,
+        dao_address: address,
+        router_address: address,
+    ) acquires LauncherRegistry {
+        assert_launcher_of_dao(launcher_signer, dao_address);
+        tax_router::add_router(&ledger::generate_signer(dao_address), router_address);
     }
 
     public fun update_static_dao_threshold(
@@ -628,13 +648,13 @@ module dao_factory::petra {
         dao_address: address,
         governance_token: Object<Metadata>
     ) acquires FactoryConfig, DaoRegistry, LauncherRegistry {
-        let launcher_addr = std::signer::address_of(launcher_signer);
+        let launcher_addr = signer::address_of(launcher_signer);
         assert_launcher(launcher_addr);
         assert_valid_dao(dao_address, governance_token);
 
         let supply_opt = fungible_asset::supply(governance_token);
-        assert!(std::option::is_some(&supply_opt), std::error::invalid_argument(E_NO_SUPPLY_TRACKING));
-        let current_supply = *std::option::borrow(&supply_opt);
+        assert!(option::is_some(&supply_opt), error::invalid_argument(E_NO_SUPPLY_TRACKING));
+        let current_supply = *option::borrow(&supply_opt);
 
         let config = borrow_global<FactoryConfig>(@dao_factory);
         let dynamic_threshold = math::compute_dynamic_threshold(current_supply, config.default_proposal_threshold_ppm);
@@ -659,7 +679,7 @@ module dao_factory::petra {
         let config = borrow_global<FactoryConfig>(@dao_factory);
 
         // SECURITY FIX (M6): Validate the caller is an approved launcher
-        let launcher_addr = std::signer::address_of(launcher_signer);
+        let launcher_addr = signer::address_of(launcher_signer);
         assert_launcher(launcher_addr);
 
         // SECURITY FIX (M6): Validate the DAO actually belongs to the governance token
@@ -711,7 +731,7 @@ module dao_factory::petra {
 
     #[view]
     public fun get_dao_token_metadata(token_addr: address): (String, String, u8, String, String) {
-        let token_metadata = supra_framework::object::address_to_object<Metadata>(token_addr);
+        let token_metadata = object::address_to_object<Metadata>(token_addr);
         (
             fungible_asset::name(token_metadata),
             fungible_asset::symbol(token_metadata),
@@ -771,11 +791,11 @@ module dao_factory::petra {
     // SECURITY: the caller must be an approved launcher AND the launcher
     // registered for THIS DAO (charter binds it at creation).
     fun assert_launcher_of_dao(launcher_signer: &signer, dao_address: address) acquires LauncherRegistry {
-        let launcher_addr = std::signer::address_of(launcher_signer);
+        let launcher_addr = signer::address_of(launcher_signer);
         assert_launcher(launcher_addr);
         assert!(
             charter::get_launcher_address(dao_address) == launcher_addr,
-            std::error::permission_denied(E_UNAUTHORIZED_LAUNCHER)
+            error::permission_denied(E_UNAUTHORIZED_LAUNCHER)
         );
     }
 }

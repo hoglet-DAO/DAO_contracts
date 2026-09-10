@@ -1,16 +1,51 @@
 module dao_factory::tax_router {
     use std::error;
     use std::signer;
+    use std::vector;
     use dao_tokens::smart_token;
+    use supra_framework::object;
+    use supra_framework::fungible_asset::{Self, FungibleStore, FungibleAsset};
 
     const E_NOT_STORE_OWNER: u64 = 1;
+    const E_NOT_WHITELISTED_ROUTER: u64 = 2;
+    const E_ROUTER_ALREADY_REGISTERED: u64 = 3;
 
+    /// FIX (audit13 R-1) Signer-proof router registry: the TaxFree bypass is
+    /// only reachable by modules holding the signer of a whitelisted protocol
+    /// object (the bonding-curve Pool of the launchpad, generated via its
+    /// ExtendRef). No user pubcall can ever forge that proof.
     struct TaxFreeRouter has key {
         cap: smart_token::TaxFreeCap,
+        /// Addresses allowed to produce the `router: &signer` proof.
+        routers: vector<address>,
     }
 
-    public fun store_tax_free_cap(dao_signer: &signer, cap: smart_token::TaxFreeCap) {
-        move_to(dao_signer, TaxFreeRouter { cap });
+    /// Stores the cap and the initial router whitelist. Called ONCE during
+    /// the launcher's migration flow with the DAO resource signer.
+    public fun store_tax_free_cap(
+        dao_signer: &signer,
+        cap: smart_token::TaxFreeCap,
+        routers: vector<address>
+    ) {
+        let i = 0;
+        let n = vector::length(&routers);
+        while (i < n) {
+            assert!(!contains_router(&routers, *vector::borrow(&routers, i)), error::invalid_argument(E_ROUTER_ALREADY_REGISTERED));
+            i = i + 1;
+        };
+        move_to(dao_signer, TaxFreeRouter { cap, routers });
+    }
+
+    fun contains_router(routers: &vector<address>, addr: address): bool {
+        let i = 0;
+        let n = vector::length(routers);
+        while (i < n) {
+            if (*vector::borrow(routers, i) == addr) {
+                return true
+            };
+            i = i + 1;
+        };
+        false
     }
 
     /// FIX (audit10 C3): true when the DAO has a TaxFreeRouter, i.e. its
@@ -22,42 +57,88 @@ module dao_factory::tax_router {
         exists<TaxFreeRouter>(dao_address)
     }
 
+    public fun is_whitelisted_router(dao_address: address, router_address: address): bool acquires TaxFreeRouter {
+        if (!exists<TaxFreeRouter>(dao_address)) {
+            return false
+        };
+        let router = borrow_global<TaxFreeRouter>(dao_address);
+        contains_router(&router.routers, router_address)
+    }
+
+    public fun get_whitelisted_routers(dao_address: address): vector<address> acquires TaxFreeRouter {
+        if (!exists<TaxFreeRouter>(dao_address)) {
+            return vector::empty<address>()
+        };
+        let router = borrow_global<TaxFreeRouter>(dao_address);
+        *&router.routers
+    }
+
+    /// FIX (audit13 R-2) Post-deploy registration, LAUNCHER-GATED: a launch
+    /// created AFTER this DAO's migration needs its bonding-curve Pool
+    /// whitelisted here so it can custody/seed THIS DAO's token as a quote.
+    /// Never callable directly: `dao_signer` is the DAO MASTER signer that
+    /// only dao_factory's friend modules can produce (ledger). The launcher
+    /// calls petra::add_tax_router, which asserts the launcher registry and
+    /// generates the signer itself.
+    public fun add_router(dao_signer: &signer, router_address: address) acquires TaxFreeRouter {
+        let routers_addr = signer::address_of(dao_signer);
+        let router = borrow_global_mut<TaxFreeRouter>(routers_addr);
+        assert!(!contains_router(&router.routers, router_address), error::invalid_argument(E_ROUTER_ALREADY_REGISTERED));
+        vector::push_back(&mut router.routers, router_address);
+    }
+
     /// Withdraws `amount` from `store` using the DAO's cap (bypasses the
     /// token's dispatch hooks).
     ///
-    /// FIX (audit9 H-2) hardening: `authority` must OWN `store`. The cap
-    /// alone can withdraw from ANY store of the DAO token, so without this
-    /// check a buggy or malicious future friend module could drain third
-    /// parties. Invariant for new call sites: only pass the signer of the
-    /// store's owner (the tx user, or a protocol object via its ExtendRef).
+    /// FIX (audit13 R-1) hardening: the caller must (a) hold the signer of a
+    /// WHITELISTED router (the object signer user pubcalls cannot produce
+    /// it) and (b) OWN the target store, by audit9 H-2. Net effect: only the
+    /// launchpad pool can extract from its own custodial reserve.
     public fun withdraw_tax_free(
         dao_address: address,
-        authority: &signer,
-        store: supra_framework::object::Object<supra_framework::fungible_asset::FungibleStore>,
+        router: &signer,
+        store: object::Object<FungibleStore>,
         amount: u64
-    ): supra_framework::fungible_asset::FungibleAsset acquires TaxFreeRouter {
+    ): FungibleAsset acquires TaxFreeRouter {
         assert!(
-            supra_framework::object::owner(store) == signer::address_of(authority),
-            error::permission_denied(E_NOT_STORE_OWNER)
+            is_whitelisted_router(dao_address, signer::address_of(router)),
+            error::permission_denied(E_NOT_WHITELISTED_ROUTER)
         );
-        let router = borrow_global<TaxFreeRouter>(dao_address);
-        smart_token::withdraw_tax_free(&router.cap, store, amount)
+        let router_addr = signer::address_of(router);
+        // The DAO MASTER signer (the same authority that already holds the
+        // DAO's mint/burn/TreasuryRef powers) is exempt from the owner check:
+        // the DAO's own trusted infra withdraws from module-owned vault
+        // stores. Every OTHER router keeps the strict audit9 H-2 owner rule.
+        if (router_addr != dao_address) {
+            assert!(
+                object::owner(store) == router_addr,
+                error::permission_denied(E_NOT_STORE_OWNER)
+            );
+        };
+        let router_res = borrow_global<TaxFreeRouter>(dao_address);
+        smart_token::withdraw_tax_free(&router_res.cap, store, amount)
     }
 
     /// FIX (audit10 C3): falls back to the normal dispatchable deposit when
-    /// the DAO has no TaxFreeRouter. Deposits do not require the receiver's
-    /// signature, so no extra authority is needed for the fallback. Plain-FA
-    /// tokens have no dispatch hooks, so the result is equivalent.
+    /// the DAO has no TaxFreeRouter (plain-FA tokens have no hooks, so the
+    /// result is equivalent). Deposits do not require the receiver's signer,
+    /// so the only gate is the whitelisted ROUTER proof: users can no longer
+    /// self-deposit tax-free to dodge the token's incoming tax hooks.
     public fun deposit_tax_free(
         dao_address: address,
-        store: supra_framework::object::Object<supra_framework::fungible_asset::FungibleStore>,
-        fa: supra_framework::fungible_asset::FungibleAsset
+        router: &signer,
+        store: object::Object<FungibleStore>,
+        fa: FungibleAsset
     ) acquires TaxFreeRouter {
         if (exists<TaxFreeRouter>(dao_address)) {
-            let router = borrow_global<TaxFreeRouter>(dao_address);
-            smart_token::deposit_tax_free(&router.cap, store, fa);
+            assert!(
+                is_whitelisted_router(dao_address, signer::address_of(router)),
+                error::permission_denied(E_NOT_WHITELISTED_ROUTER)
+            );
+            let router_res = borrow_global<TaxFreeRouter>(dao_address);
+            smart_token::deposit_tax_free(&router_res.cap, store, fa);
         } else {
-            supra_framework::fungible_asset::deposit(store, fa);
+            fungible_asset::deposit(store, fa);
         };
     }
 }

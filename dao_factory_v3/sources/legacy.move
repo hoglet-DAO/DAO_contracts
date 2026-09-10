@@ -556,7 +556,7 @@ module dao_factory::legacy {
         // FIX (audit10 C3): with a TaxFreeRouter the cap path bypasses the
         // dispatch hooks; plain-FA DAOs use the normal owner-signed flow.
         let fa = if (dao_factory::tax_router::has_tax_free_router(dao_address)) {
-            dao_factory::tax_router::withdraw_tax_free(dao_address, &obj_signer, store, locked_amount)
+            dao_factory::tax_router::withdraw_tax_free(dao_address, &ledger::generate_signer(dao_address), store, locked_amount)
         } else {
             fungible_asset::withdraw(&obj_signer, store, locked_amount)
         };
@@ -583,7 +583,7 @@ module dao_factory::legacy {
         update_total_locked_history(dao_address, registry.total_locked);
 
         let user_store = primary_fungible_store::ensure_primary_store_exists(owner_addr, registry.token_metadata);
-        dao_factory::tax_router::deposit_tax_free(dao_address, user_store, fa);
+        dao_factory::tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), user_store, fa);
 
         // Checkpoint for rewards (0 because everything was withdrawn)
         harvest::checkpoint(dao_address, obj_addr, 0);
@@ -626,7 +626,7 @@ module dao_factory::legacy {
 
         // 2. Deposit FA into the `into_legacy` store
         let into_store = object::address_to_object<FungibleStore>(into_legacy_addr);
-        dao_factory::tax_router::deposit_tax_free(dao_address, into_store, fa);
+        dao_factory::tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), into_store, fa);
 
         // 3. Update `into_legacy` metadata
         let new_total: u64;
@@ -929,11 +929,11 @@ module dao_factory::legacy {
     /// `owner` must own `from_store` (only needed by the fallback branch).
     fun transfer_tax_free(dao_address: address, owner: &signer, from_store: Object<FungibleStore>, to_store: Object<FungibleStore>, amount: u64) {
         let fa = if (dao_factory::tax_router::has_tax_free_router(dao_address)) {
-            dao_factory::tax_router::withdraw_tax_free(dao_address, owner, from_store, amount)
+            dao_factory::tax_router::withdraw_tax_free(dao_address, &ledger::generate_signer(dao_address), from_store, amount)
         } else {
             fungible_asset::withdraw(owner, from_store, amount)
         };
-        dao_factory::tax_router::deposit_tax_free(dao_address, to_store, fa);
+        dao_factory::tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), to_store, fa);
     }
 
     /// FIX (audit10 M3): internal DAO flows bypass the token's dispatch hooks

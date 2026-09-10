@@ -147,11 +147,11 @@ module dao_factory::zeal {
             default_destination,
         });
 
-        let len = std::vector::length(&staking_tokens);
+        let len = vector::length(&staking_tokens);
         let i = 0;
         let dao_token_address = dao_factory::legacy::get_token_metadata_address(signer::address_of(dao_signer));
         while (i < len) {
-            let staking_token_addr = *std::vector::borrow(&staking_tokens, i);
+            let staking_token_addr = *vector::borrow(&staking_tokens, i);
             let gauge_address = foundry::create_gauge(dao_signer, staking_token_addr, dao_token_address);
             create_gauge(dao_signer, gauge_address, staking_token_addr, false);
             i = i + 1;
@@ -254,8 +254,8 @@ module dao_factory::zeal {
     ) acquires GaugeRegistry {
         assert!(!sentinel::is_paused(dao_address), error::invalid_state(E_PAUSED));
         assert!(charter::is_active(dao_address), error::invalid_state(E_NOT_ACTIVE));
-        assert!(supra_framework::object::is_object(legacy_addr), error::invalid_argument(E_NOT_OBJECT));
-        let ve_token_obj = supra_framework::object::address_to_object<legacy::VeToken>(legacy_addr);
+        assert!(object::is_object(legacy_addr), error::invalid_argument(E_NOT_OBJECT));
+        let ve_token_obj = object::address_to_object<legacy::VeToken>(legacy_addr);
         let voter_addr = signer::address_of(voter);
         
         // Allow both the strict owner OR the authorized delegate to vote.
@@ -269,7 +269,7 @@ module dao_factory::zeal {
         // to prevent bribe sniping.
         assert!(pilgrim::seconds_until_next_epoch() > 86400, error::invalid_state(E_VOTING_CLOSED));
         
-        let ve_addr = supra_framework::object::object_address(&ve_token_obj);
+        let ve_addr = object::object_address(&ve_token_obj);
         let registry = borrow_global_mut<GaugeRegistry>(dao_address);
         let current_epoch = pilgrim::now();
 
@@ -378,7 +378,7 @@ module dao_factory::zeal {
         token_metadata_addr: address,
     ) acquires GaugeRegistry {
         assert!(target_epoch < pilgrim::now(), error::invalid_argument(E_INVALID_EPOCH));
-        assert!(supra_framework::object::is_object(token_metadata_addr), error::invalid_argument(E_NOT_OBJECT));
+        assert!(object::is_object(token_metadata_addr), error::invalid_argument(E_NOT_OBJECT));
 
         // SECURITY FIX (VULN-01): The emissions vault only ever holds the DAO's
         // governance token (deposited by jubilee). Derive the expected token
@@ -389,7 +389,7 @@ module dao_factory::zeal {
         let dao_token_address = legacy::get_token_metadata_address(dao_address);
         assert!(token_metadata_addr == dao_token_address, error::invalid_argument(E_INVALID_TOKEN));
 
-        let token_metadata = supra_framework::object::address_to_object<Metadata>(token_metadata_addr);
+        let token_metadata = object::address_to_object<Metadata>(token_metadata_addr);
 
         let registry = borrow_global_mut<GaugeRegistry>(dao_address);
         assert!(smart_table::contains(&registry.gauges, gauge_id), error::invalid_argument(E_INVALID_GAUGE));

@@ -10,8 +10,9 @@ module dao_factory::restore {
     friend dao_factory::anchor;
     use std::signer;
     use std::vector;
-    use supra_framework::fungible_asset::Metadata;
+    use supra_framework::fungible_asset::{Self, Metadata};
     use supra_framework::primary_fungible_store;
+    use supra_framework::coin;
 
     use supra_framework::object::{Self, Object, ExtendRef};
     use supra_framework::event;
@@ -21,6 +22,7 @@ module dao_factory::restore {
 
     use dao_factory::math;
     use dao_factory::pilgrim;
+    use dao_factory::ledger;
     use dao_factory::zeal;
     use dao_factory::legacy;
     use dao_factory::sentinel;
@@ -182,7 +184,7 @@ module dao_factory::restore {
         gauge_id: u64,
         token_addr: address,
         amount: u64,
-        fa: supra_framework::fungible_asset::FungibleAsset
+        fa: fungible_asset::FungibleAsset
     ) {
         // FIX (FUND-03): Prevent front-running by only allowing bribes for FUTURE epochs
         assert!(pilgrim > pilgrim::now(), error::invalid_argument(E_INVALID_EPOCH));
@@ -213,8 +215,8 @@ module dao_factory::restore {
         token_metadata_addr: address,
         amount: u64,
     ) acquires BribeRegistry {
-        assert!(supra_framework::object::is_object(token_metadata_addr), error::invalid_argument(E_NOT_OBJECT));
-        let token_metadata = supra_framework::object::address_to_object<Metadata>(token_metadata_addr);
+        assert!(object::is_object(token_metadata_addr), error::invalid_argument(E_NOT_OBJECT));
+        let token_metadata = object::address_to_object<Metadata>(token_metadata_addr);
         let depositor_addr = signer::address_of(depositor);
         let token_addr = object::object_address(&token_metadata);
         let registry = borrow_global_mut<BribeRegistry>(dao_address);
@@ -228,9 +230,9 @@ module dao_factory::restore {
         // apply, same as any user transfer).
         let use_cap = use_cap_route(dao_address, token_addr);
         let fa = if (use_cap) {
-            dao_factory::tax_router::withdraw_tax_free(dao_address, depositor, user_store, amount)
+            dao_factory::tax_router::withdraw_tax_free(dao_address, &ledger::generate_signer(dao_address), user_store, amount)
         } else {
-            supra_framework::fungible_asset::withdraw(depositor, user_store, amount)
+            fungible_asset::withdraw(depositor, user_store, amount)
         };
         process_bribe_deposit(registry, dao_address, depositor_addr, pilgrim, gauge_id, token_addr, amount, fa);
     }
@@ -247,9 +249,9 @@ module dao_factory::restore {
         let depositor_addr = signer::address_of(depositor);
         let registry = borrow_global_mut<BribeRegistry>(dao_address);
         
-        let coin = supra_framework::coin::withdraw<CoinType>(depositor, amount);
-        let fa = supra_framework::coin::coin_to_fungible_asset(coin);
-        let token_metadata = supra_framework::fungible_asset::asset_metadata(&fa);
+        let coin = coin::withdraw<CoinType>(depositor, amount);
+        let fa = coin::coin_to_fungible_asset(coin);
+        let token_metadata = fungible_asset::asset_metadata(&fa);
         let token_addr = object::object_address(&token_metadata);
 
         process_bribe_deposit(registry, dao_address, depositor_addr, pilgrim, gauge_id, token_addr, amount, fa);
@@ -266,10 +268,10 @@ module dao_factory::restore {
         token_metadata_addr: address,
     ) acquires BribeRegistry {
         assert!(!sentinel::is_paused(dao_address), error::invalid_state(E_PAUSED));
-        assert!(supra_framework::object::is_object(legacy_addr), error::invalid_argument(E_NOT_OBJECT));
-        assert!(supra_framework::object::is_object(token_metadata_addr), error::invalid_argument(E_NOT_OBJECT));
-        let ve_token_obj = supra_framework::object::address_to_object<legacy::VeToken>(legacy_addr);
-        let token_metadata = supra_framework::object::address_to_object<Metadata>(token_metadata_addr);
+        assert!(object::is_object(legacy_addr), error::invalid_argument(E_NOT_OBJECT));
+        assert!(object::is_object(token_metadata_addr), error::invalid_argument(E_NOT_OBJECT));
+        let ve_token_obj = object::address_to_object<legacy::VeToken>(legacy_addr);
+        let token_metadata = object::address_to_object<Metadata>(token_metadata_addr);
 
         // Can only claim from PAST epochs (the epoch's voting has already closed)
         // This ensures that the total_power is immutable and final.
@@ -278,7 +280,7 @@ module dao_factory::restore {
         let claimer_addr = signer::address_of(claimer);
         // FIX (audit10 M3): blacklisted accounts must not extract bribes.
         legacy::assert_not_blacklisted(dao_address, claimer_addr);
-        assert!(supra_framework::object::is_owner(ve_token_obj, claimer_addr), error::permission_denied(E_NOT_OWNER));
+        assert!(object::is_owner(ve_token_obj, claimer_addr), error::permission_denied(E_NOT_OWNER));
 
         let ve_token_addr = object::object_address(&ve_token_obj);
         
@@ -316,14 +318,14 @@ module dao_factory::restore {
             let use_cap = use_cap_route(dao_address, token_addr);
             let vault_signer = object::generate_signer_for_extending(&registry.vault_extend_ref);
             let fa = if (use_cap) {
-                dao_factory::tax_router::withdraw_tax_free(dao_address, &vault_signer, vault_store, share)
+                dao_factory::tax_router::withdraw_tax_free(dao_address, &ledger::generate_signer(dao_address), vault_store, share)
             } else {
-                supra_framework::fungible_asset::withdraw(&vault_signer, vault_store, share)
+                fungible_asset::withdraw(&vault_signer, vault_store, share)
             };
             if (use_cap) {
-                dao_factory::tax_router::deposit_tax_free(dao_address, user_store, fa);
+                dao_factory::tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), user_store, fa);
             } else {
-                supra_framework::fungible_asset::deposit(user_store, fa);
+                fungible_asset::deposit(user_store, fa);
             };
 
             event::emit(BribeClaimed {
@@ -390,13 +392,13 @@ module dao_factory::restore {
         token_metadata_addr: address,
     ) acquires BribeRegistry {
         assert!(past_pilgrim < pilgrim::now(), error::invalid_state(E_INVALID_EPOCH));
-        assert!(supra_framework::object::is_object(token_metadata_addr), error::invalid_argument(E_NOT_OBJECT));
+        assert!(object::is_object(token_metadata_addr), error::invalid_argument(E_NOT_OBJECT));
         
         // Verify that the gauge received exactly 0 votes in that epoch
         let total_power = zeal::get_gauge_total_votes(dao_address, past_pilgrim, gauge_id);
         assert!(total_power == 0, error::invalid_state(E_NOT_AUTHORIZED)); // Only rollover if 0 votes
 
-        let token_metadata = supra_framework::object::address_to_object<Metadata>(token_metadata_addr);
+        let token_metadata = object::address_to_object<Metadata>(token_metadata_addr);
         let token_addr = object::object_address(&token_metadata);
         
         let past_key = BribeKey { pilgrim: past_pilgrim, gauge_id, token_addr };

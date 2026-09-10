@@ -4,6 +4,9 @@ module dao_factory::ledger {
     friend dao_factory::herald;
     friend dao_factory::petra;
     friend dao_factory::legacy;
+    friend dao_factory::harvest;
+    friend dao_factory::restore;
+    friend dao_factory::foundry;
     
     use std::string::String;
     use std::error;

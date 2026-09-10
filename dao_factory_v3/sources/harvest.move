@@ -17,6 +17,7 @@ module dao_factory::harvest {
     use supra_framework::event;
     use aptos_std::smart_table::{Self, SmartTable};
     use dao_factory::table;
+    use dao_factory::ledger;
 
     // Constants 
     // Precision factor to avoid truncation in division.
@@ -148,11 +149,11 @@ module dao_factory::harvest {
         // exactly this purpose).
         let vault_signer = supra_framework::object::generate_signer_for_extending(&vault.extend_ref);
         let fa = if (dao_factory::tax_router::has_tax_free_router(dao_address)) {
-            dao_factory::tax_router::withdraw_tax_free(dao_address, &vault_signer, vault.store, pending)
+            dao_factory::tax_router::withdraw_tax_free(dao_address, &ledger::generate_signer(dao_address), vault.store, pending)
         } else {
             fungible_asset::withdraw(&vault_signer, vault.store, pending)
         };
-        dao_factory::tax_router::deposit_tax_free(dao_address, dest_store, fa);
+        dao_factory::tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), dest_store, fa);
 
         event::emit(RewardsClaimed {
             dao_address,

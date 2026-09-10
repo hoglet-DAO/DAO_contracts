@@ -24,7 +24,7 @@ module dao_factory::coin_legacy_router {
     }
 
     /// Creates a static DAO for a Coin-Legacy token.
-    /// The user only needs to specify the CoinType — the router resolves
+    /// The user only needs to specify the CoinType the router resolves
     /// the FA Metadata address automatically.
     public entry fun create_dao_static_coin<CoinType>(creator: &signer) {
         let governance_token = resolve_metadata<CoinType>();

@@ -1,0 +1,22 @@
+[package]
+name = "dao_router"
+version = "1.0.0"
+
+[addresses]
+dao_factory = "0xf03c023e36f598e18a6ac4353f4a418f0da10710cf55c1a30329824e71a00abe"
+
+[dependencies.SupraFramework]
+git = "https://github.com/Entropy-Foundation/aptos-core.git"
+rev = "dev"
+subdir = "aptos-move/framework/supra-framework"
+
+[dependencies.AptosTokenObjects]
+git = "https://github.com/Entropy-Foundation/aptos-core.git"
+rev = "dev"
+subdir = "aptos-move/framework/aptos-token-objects"
+
+[dependencies.dao_factory]
+local = "../dao_factory"
+
+[dependencies.nft_wrap]
+local = "../wrap"
