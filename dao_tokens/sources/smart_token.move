@@ -325,6 +325,16 @@ module dao_tokens::smart_token {
         config.is_blacklist_active && vector::contains(&config.blacklist, &account)
     }
 
+    /// [FIX (AUDIT14 N-2)] Read-only tax toggle for routes with
+    /// taxed-quantum semantics (e.g. the launchpad's exact-price swap).
+    /// Non-configured tokens return false and never abort.
+    #[view]
+    public fun is_tax_active(token_addr: address): bool acquires DaoTokenConfig {
+        if (!exists<DaoTokenConfig>(token_addr)) return false;
+        let config = borrow_global<DaoTokenConfig>(token_addr);
+        config.is_tax_active
+    }
+
     /// Transfers the admin role of the token to a new address (e.g. the DAO)
     public fun transfer_admin(
         token_addr: address,
