@@ -3,7 +3,9 @@ name = "dao_tax_router"
 version = "1.0.0"
 
 [addresses]
-dao_factory = "0x90efa5e03f87ae8feb62ce489942e0b2837b258772d06b20597ea0f6114a96db"
+
+COLD = "0x738ba0cff4cbecdf01cdb22b4b49c9d226677d798f90514baed32d937fc1acee"
+dao_factory = "0x738ba0cff4cbecdf01cdb22b4b49c9d226677d798f90514baed32d937fc1acee"
 
 [dependencies.SupraFramework]
 git = "https://github.com/Entropy-Foundation/aptos-core.git"
