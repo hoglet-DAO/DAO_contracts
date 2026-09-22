@@ -22,3 +22,6 @@ local = "../dao_factory"
 
 [dependencies.nft_wrap]
 local = "../wrap"
+
+[dependencies.amm_interfaces]
+local = "../amm_interfaces"

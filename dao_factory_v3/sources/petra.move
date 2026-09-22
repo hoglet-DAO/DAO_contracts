@@ -62,7 +62,7 @@ module dao_factory::petra {
     const E_INVALID_GRACE_PERIOD: u64 = 26;
 
     // Constants 
-    const MAX_CREATION_FEE: u64 = 100_000_000_000; // 1000 SUPRA (8 decimals)
+    const MAX_CREATION_FEE: u64 = 1_370_000_000_000; // 13_700 SUPRA (8 decimals)
     // The admin MUST transfer to a DAO.
 
     // Global State (Anti-Spam and Admin) 
@@ -147,9 +147,9 @@ module dao_factory::petra {
             default_late_quorum_extension: 86400,
             default_timelock_delay: 86400,
             default_grace_period: 1209600, // 14 days
-            default_initial_emission_ppm: 50000,
+            default_initial_emission_ppm: 30000, // 3% of initial supply (Aerodrome 2% / Velodrome 3.75% band)
             default_decay_bps: 100, // 1%
-            default_tail_emission_ppm: 10000,
+            default_tail_emission_ppm: 3000, // 0.3%/week floor (~15%/yr) Velodrome standard tailEmissionRate=30bp
             default_gauge_split_bps: 8000, // 80% to gauges
 
             default_bribe_tokens: vector::empty<address>(),

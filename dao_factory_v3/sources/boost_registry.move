@@ -23,7 +23,6 @@ module dao_factory::boost_registry {
     use supra_framework::object;
     use supra_framework::event;
     use aptos_std::smart_table::{Self, SmartTable};
-    use aptos_token_objects::collection;
     use aptos_token_objects::token;
     use dao_factory::table;
 
@@ -33,7 +32,6 @@ module dao_factory::boost_registry {
     const E_TOO_MANY_COLLECTIONS: u64 = 3;
     const E_TOO_MANY_NFTS: u64 = 4;
     const E_ZERO_BOOST: u64 = 5;
-    const E_NOT_A_COLLECTION: u64 = 6;
     const E_NOT_INITIALIZED: u64 = 7;
 
     // UNBREAKABLE hard cap: no user can ever receive more than +13.7% rewards,
@@ -86,11 +84,17 @@ module dao_factory::boost_registry {
         collection_addr: address,
         boost_bps: u64,
     ) acquires BoostRegistry {
-        // Must be a real 0x4 Collection object on-chain.
-        assert!(
-            object::object_exists<collection::Collection>(collection_addr),
-            error::invalid_argument(E_NOT_A_COLLECTION)
-        );
+        // NOTE: we deliberately do NOT require the collection to exist as a 0x4
+        // `collection::Collection` object here. Legacy V1 collections are
+        // wrapped lazily, so a DAO may legitimately approve the deterministic
+        // wrapped address BEFORE any NFT has been wrapped. The wrapper creates
+        // the collection at exactly that address on first wrap.
+        //
+        // The real safety checks live where boosts are applied
+        // (foundry::apply_boost -> boost_registry::compute_boost): each NFT is
+        // verified to be a real 0x4 Token, owned by the user, and to belong to a
+        // collection present in this registry. Approving a non-existent address
+        // is therefore inert: it grants nothing until real NFTs match it.
         assert!(boost_bps > 0, error::invalid_argument(E_ZERO_BOOST));
         assert!(boost_bps <= HARD_MAX_BOOST_CAP_BPS, error::invalid_argument(E_BOOST_TOO_HIGH));
 

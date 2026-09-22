@@ -28,7 +28,6 @@ module dao_factory::herald {
     use dao_factory::sentinel;
     use dao_factory::jubilee;
     use dao_factory::boost_registry;
-    use aptos_token_objects::collection;
 
     // Errors
     const E_BELOW_THRESHOLD: u64 = 1;
@@ -39,7 +38,6 @@ module dao_factory::herald {
     const E_NOT_INFLATIONARY: u64 = 6;
     const E_DAO_NOT_ACTIVE: u64 = 7;
     const E_INVALID_ACTION_TYPE: u64 = 8;
-    const E_NOT_A_COLLECTION: u64 = 9;
     const E_INVALID_BOOST: u64 = 10;
 
     // Structs 
@@ -524,12 +522,14 @@ module dao_factory::herald {
         assert!(charter::is_inflationary(dao_address), error::invalid_state(E_NOT_INFLATIONARY));
 
         if (action_type == 0) {
-            // Fail fast: the collection must be a real 0x4 Collection object
-            // and the boost must respect the unbreakable hard cap.
-            assert!(
-                supra_framework::object::object_exists<collection::Collection>(collection_addr),
-                error::invalid_argument(E_NOT_A_COLLECTION)
-            );
+            // The collection may be a live 0x4 Collection OR the deterministic
+            // wrapped address of a legacy V1 collection that has not been
+            // wrapped yet (the wrapper creates it lazily at exactly that
+            // address). We cannot call the wrapper from here (keeps the
+            // dependency DAG acyclic), so existence is NOT asserted: the boost
+            // only ever takes effect through foundry::apply_boost ->
+            // boost_registry::compute_boost, which verifies real 0x4 Tokens,
+            // ownership and registry membership at claim time.
             assert!(
                 boost_bps > 0 && boost_bps <= boost_registry::hard_cap_bps(),
                 error::invalid_argument(E_INVALID_BOOST)
