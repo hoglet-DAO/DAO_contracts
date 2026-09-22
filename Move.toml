@@ -6,7 +6,7 @@ authors = []
 [addresses]
 
 SLEEP = "0xe3604080ae874ea9c4b770744fa1a713d94e1d4ec0c5b7aba4ad5195de7841f8"
-dao_factory = "0x90efa5e03f87ae8feb62ce489942e0b2837b258772d06b20597ea0f6114a96db"
+dao_factory = "0xe3604080ae874ea9c4b770744fa1a713d94e1d4ec0c5b7aba4ad5195de7841f8"
 
 [dev-addresses]
 
