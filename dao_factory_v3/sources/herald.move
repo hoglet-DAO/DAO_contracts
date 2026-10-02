@@ -68,6 +68,11 @@ module dao_factory::herald {
         action_amount: u64,
         action_config_key: u64,
         action_config_value: u64,
+        /// Hash of the off-chain proposal metadata (title/description/discussion
+        /// link). It is already stored on-chain in `ledger::Proposal`, but
+        /// without emitting it here indexers cannot resolve it and every
+        /// proposal gets indexed with the "No description provided." default.
+        description_hash: vector<u8>,
     }
 
     // Functions
@@ -203,7 +208,7 @@ module dao_factory::herald {
 
         emit_proposal_event(
             dao_address, proposal_id, proposer_addr, title, 0, start_time, end_time,
-            target_address, @0x0, @0x0, 0, 0, 0
+            target_address, @0x0, @0x0, 0, 0, 0, description_hash
         );
     }
 
@@ -238,7 +243,7 @@ module dao_factory::herald {
 
         emit_proposal_event(
             dao_address, proposal_id, proposer_addr, title, 1, start_time, end_time,
-            @0x0, asset_address, recipient, amount, 0, 0
+            @0x0, asset_address, recipient, amount, 0, 0, description_hash
         );
     }
 
@@ -281,7 +286,7 @@ module dao_factory::herald {
 
         emit_proposal_event(
             dao_address, proposal_id, proposer_addr, title, 1, start_time, end_time,
-            @0x0, asset_address, recipient, amount, 0, 0
+            @0x0, asset_address, recipient, amount, 0, 0, description_hash
         );
     }
 
@@ -312,7 +317,7 @@ module dao_factory::herald {
 
         emit_proposal_event(
             dao_address, proposal_id, proposer_addr, title, 6, start_time, end_time,
-            target_address, @0x0, @0x0, 0, 0, 0
+            target_address, @0x0, @0x0, 0, 0, 0, description_hash
         );
     }
 
@@ -345,7 +350,7 @@ module dao_factory::herald {
 
         emit_proposal_event(
             dao_address, proposal_id, proposer_addr, title, 5, start_time, end_time,
-            nft_address, @0x0, recipient, 1, 0, 0
+            nft_address, @0x0, recipient, 1, 0, 0, description_hash
         );
     }
 
@@ -387,7 +392,7 @@ module dao_factory::herald {
 
         emit_proposal_event(
             dao_address, proposal_id, proposer_addr, title, 2, start_time, end_time,
-            @0x0, @0x0, @0x0, 0, (config_key as u64), config_value
+            @0x0, @0x0, @0x0, 0, (config_key as u64), config_value, description_hash
         );
     }
 
@@ -417,7 +422,7 @@ module dao_factory::herald {
 
         emit_proposal_event(
             dao_address, proposal_id, proposer_addr, title, 4, start_time, end_time,
-            new_guardian, @0x0, @0x0, 0, 0, 0
+            new_guardian, @0x0, @0x0, 0, 0, 0, description_hash
         );
     }
 
@@ -564,7 +569,8 @@ module dao_factory::herald {
 
     fun emit_proposal_event(
         dao_address: address, proposal_id: u64, proposer: address, title: String, proposal_type: u8, start_time: u64, end_time: u64,
-        action_target_address: address, action_asset_address: address, action_recipient: address, action_amount: u64, action_config_key: u64, action_config_value: u64
+        action_target_address: address, action_asset_address: address, action_recipient: address, action_amount: u64, action_config_key: u64, action_config_value: u64,
+        description_hash: vector<u8>
     ) {
         event::emit(ProposalCreated {
             dao_address,
@@ -580,6 +586,7 @@ module dao_factory::herald {
             action_amount,
             action_config_key,
             action_config_value,
+            description_hash,
         });
     }
 
