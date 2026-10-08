@@ -1,0 +1,31 @@
+[package]
+name = "dao_router"
+version = "1.0.0"
+
+[addresses]
+
+HOGLET = "0x17aecc0a267c77a70f51db8070f504bce55d64de886e675b52bd9143729897d9"
+dao_factory = "0x17aecc0a267c77a70f51db8070f504bce55d64de886e675b52bd9143729897d9"
+
+[dependencies.SupraFramework]
+git = "https://github.com/Entropy-Foundation/aptos-core.git"
+rev = "dev"
+subdir = "aptos-move/framework/supra-framework"
+
+[dependencies.AptosTokenObjects]
+git = "https://github.com/Entropy-Foundation/aptos-core.git"
+rev = "dev"
+subdir = "aptos-move/framework/aptos-token-objects"
+
+[dependencies.hoglet_dao]
+git = "https://github.com/hoglet-DAO/DAO_contracts.git"
+rev = "main"
+subdir = "mainnet/dao_factory"
+
+[dependencies.hoglet_core]
+git = "https://github.com/hoglet-DAO/spike.git"
+rev = "main"
+
+[dependencies.nft_wrap]
+git = "https://github.com/hoglet-DAO/nft_wrapper.git"
+rev = "main"
