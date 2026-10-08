@@ -15,7 +15,6 @@ module dao_factory::ledger {
     use supra_framework::timestamp;
     use supra_framework::account::{Self, SignerCapability};
     use aptos_std::smart_table::{Self, SmartTable};
-    use supra_framework::event;
 
     const E_PROPOSAL_NOT_FOUND: u64 = 4;
     const E_NOT_FOUND: u64 = 6;
