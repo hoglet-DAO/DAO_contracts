@@ -18,6 +18,7 @@ module dao_factory::harvest {
     use aptos_std::smart_table::{Self, SmartTable};
     use dao_libs::table;
     use dao_factory::ledger;
+    use dao_tax_router::tax_router;
 
     // Constants 
     // Precision factor to avoid truncation in division.
@@ -93,8 +94,8 @@ module dao_factory::harvest {
             // route via the cap (DAO master signer = whitelisted router,
             // audit13 R-1); plain-FA DAOs have no TaxFreeRouter resource and
             // keep the plain deposit (no hooks exist for them).
-            if (dao_factory::tax_router::has_tax_free_router(dao_address)) {
-                dao_factory::tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), vault.store, reward);
+            if (tax_router::has_tax_free_router(dao_address)) {
+                tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), vault.store, reward);
             } else {
                 dispatchable_fungible_asset::deposit(vault.store, reward);
             };
@@ -158,12 +159,12 @@ module dao_factory::harvest {
         // which owns its store (its ExtendRef is stored in RewardVault for
         // exactly this purpose).
         let vault_signer = supra_framework::object::generate_signer_for_extending(&vault.extend_ref);
-        let fa = if (dao_factory::tax_router::has_tax_free_router(dao_address)) {
-            dao_factory::tax_router::withdraw_tax_free(dao_address, &ledger::generate_signer(dao_address), vault.store, pending)
+        let fa = if (tax_router::has_tax_free_router(dao_address)) {
+            tax_router::withdraw_tax_free(dao_address, &ledger::generate_signer(dao_address), vault.store, pending)
         } else {
             fungible_asset::withdraw(&vault_signer, vault.store, pending)
         };
-        dao_factory::tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), dest_store, fa);
+        tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), dest_store, fa);
 
         event::emit(RewardsClaimed {
             dao_address,

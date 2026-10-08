@@ -32,7 +32,7 @@ module dao_factory::petra {
     use dao_factory::sentinel;
     use dao_factory::boost_registry;
     use dao_libs::math;
-    use dao_factory::tax_router;
+    use dao_tax_router::tax_router;
     use dao_tokens::smart_token;
 
     // Errors 

@@ -27,7 +27,8 @@ module dao_factory::restore {
     use dao_factory::legacy;
     use dao_factory::sentinel;
     use dao_libs::table;
-
+    use dao_tax_router::tax_router;
+    
     // Errors 
     const E_NOT_WHITELISTED: u64 = 1;
     const E_NO_VOTES: u64        = 2;
@@ -172,7 +173,7 @@ module dao_factory::restore {
     /// token (withdraw_with_ref requires matching metadata) and only exists
     /// for launcher smart tokens (see tax_router::has_tax_free_router).
     fun use_cap_route(dao_address: address, token_addr: address): bool {
-        dao_factory::tax_router::has_tax_free_router(dao_address)
+        tax_router::has_tax_free_router(dao_address)
             && token_addr == legacy::get_token_metadata_address(dao_address)
     }
 
@@ -230,7 +231,7 @@ module dao_factory::restore {
         // apply, same as any user transfer).
         let use_cap = use_cap_route(dao_address, token_addr);
         let fa = if (use_cap) {
-            dao_factory::tax_router::withdraw_tax_free(dao_address, &ledger::generate_signer(dao_address), user_store, amount)
+            tax_router::withdraw_tax_free(dao_address, &ledger::generate_signer(dao_address), user_store, amount)
         } else {
             fungible_asset::withdraw(depositor, user_store, amount)
         };
@@ -318,12 +319,12 @@ module dao_factory::restore {
             let use_cap = use_cap_route(dao_address, token_addr);
             let vault_signer = object::generate_signer_for_extending(&registry.vault_extend_ref);
             let fa = if (use_cap) {
-                dao_factory::tax_router::withdraw_tax_free(dao_address, &ledger::generate_signer(dao_address), vault_store, share)
+                tax_router::withdraw_tax_free(dao_address, &ledger::generate_signer(dao_address), vault_store, share)
             } else {
                 fungible_asset::withdraw(&vault_signer, vault_store, share)
             };
             if (use_cap) {
-                dao_factory::tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), user_store, fa);
+                tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), user_store, fa);
             } else {
                 fungible_asset::deposit(user_store, fa);
             };
