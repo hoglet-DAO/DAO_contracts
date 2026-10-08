@@ -26,7 +26,7 @@ module dao_factory::restore {
     use dao_factory::zeal;
     use dao_factory::legacy;
     use dao_factory::sentinel;
-    use dao_factory::table;
+    use dao_libs::table;
 
     // Errors 
     const E_NOT_WHITELISTED: u64 = 1;
