@@ -1,4 +1,4 @@
-module dao_factory::hoglet_genesis {
+module dao_genesis::hoglet_genesis {
     use std::signer;
     use std::string;
     use std::option;
