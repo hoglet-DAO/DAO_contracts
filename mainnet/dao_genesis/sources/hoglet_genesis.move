@@ -41,15 +41,17 @@ module dao_genesis::hoglet_genesis {
         petra::set_default_config(admin, 9, 100); // 1% weekly decay
         petra::set_default_config(admin, 10, 10); // 10 PPM = 0.001% = 137 Billions perpetual
 
-        // 4. Create the Inflationary DAO via Factory
-        let dao_address = petra::create_dao_inflationary(admin, metadata_object, mint_ref);
+        // 4. Temporarily exempt creation fee for this account and create the Inflationary DAO via Factory
+        petra::set_creation_fee(admin, 0);
+        let _dao_address = petra::create_dao_inflationary(admin, metadata_object, mint_ref);
+        petra::set_creation_fee(admin, 1_370_000_000); // Restore 13.7 SUPRA fee
 
         // 5. Revert the Factory to the 137-themed defaults for everyone else
         petra::set_default_config(admin, 12, 13700); // 1.37%
         petra::set_default_config(admin, 9, 137); // 1.37% decay
         petra::set_default_config(admin, 10, 137); // 0.0137%
 
-        // 6. Complete Ouroboros: Transfer Factory admin rights to the Hoglet DAO
-        //petra::transfer_admin(admin, dao_address);
+        // 6. Transfer Factory admin rights to the recipient wallet
+        petra::transfer_admin(admin, @recipient);
     }
 }

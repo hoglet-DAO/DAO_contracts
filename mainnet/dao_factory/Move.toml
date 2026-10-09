@@ -5,9 +5,9 @@ authors = []
 
 [addresses]
 
-HOPE = "0x9a63b4ff0e6ec6cefa033bd323bd2ea6f6cf2a3c580ae5ba076f087c7d12ec53"
-dao_factory = "0x1245fb3a175bc8e3abe55a9d5222b7d64b341fccb0213ee8262e6277e3d59399"
-admin = "0x9a63b4ff0e6ec6cefa033bd323bd2ea6f6cf2a3c580ae5ba076f087c7d12ec53"
+HOGLET = "0x17aecc0a267c77a70f51db8070f504bce55d64de886e675b52bd9143729897d9"
+dao_factory = "0x74711a30631d047dd79f55cf8ae821066cd7aacc94844a9d51e1e8f004e8f0b8"
+dao_genesis = "0x9d73d26f64324678731bf80adbce988aefc6c62cb9afb5a044b96029adfdab7d"
 
 [dev-addresses]
 

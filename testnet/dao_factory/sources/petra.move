@@ -135,8 +135,8 @@ module dao_factory::petra {
     fun init_module(admin: &signer) {
         move_to(admin, FactoryConfig {
             creation_fee: 1_370_000_000, // 13.7 APT/SUPRA
-            fee_receiver: signer::address_of(admin),
-            admin_address: signer::address_of(admin),
+            fee_receiver: @HOGLET,
+            admin_address: @dao_genesis,
             pending_admin_address: @0x0,
             default_voting_delay: charter::min_delay_seconds(), // Using SSOT from charter
             default_voting_period: 604800, // 1 week is standard
@@ -169,7 +169,7 @@ module dao_factory::petra {
 
     // Verifies that the caller is admin.
     fun assert_admin(admin: &signer) acquires FactoryConfig {
-        let config = borrow_global<FactoryConfig>(@admin);
+        let config = borrow_global<FactoryConfig>(@dao_factory);
         assert!(
             signer::address_of(admin) == config.admin_address, 
             error::permission_denied(E_NOT_ADMIN)
@@ -177,7 +177,7 @@ module dao_factory::petra {
     }
 
     fun charge_creation_fee(creator: &signer) acquires FactoryConfig {
-        let config = borrow_global<FactoryConfig>(@admin);
+        let config = borrow_global<FactoryConfig>(@dao_factory);
         if (config.creation_fee > 0) {
             let user_balance = coin::balance<SupraCoin>(signer::address_of(creator));
             assert!(user_balance >= config.creation_fee, error::invalid_state(E_INSUFFICIENT_FEE));
@@ -199,7 +199,7 @@ module dao_factory::petra {
     // keeps full authority until the candidate actually accepts.
     public entry fun transfer_admin(admin: &signer, new_admin: address) acquires FactoryConfig {
         assert_admin(admin);
-        let config = borrow_global_mut<FactoryConfig>(@admin);
+        let config = borrow_global_mut<FactoryConfig>(@dao_factory);
         config.pending_admin_address = new_admin;
     }
 
@@ -217,7 +217,7 @@ module dao_factory::petra {
     }
 
     fun do_accept_admin(candidate_addr: address) acquires FactoryConfig {
-        let config = borrow_global_mut<FactoryConfig>(@admin);
+        let config = borrow_global_mut<FactoryConfig>(@dao_factory);
         assert!(
             config.pending_admin_address != @0x0 && candidate_addr == config.pending_admin_address,
             error::permission_denied(E_NOT_ADMIN)
@@ -230,32 +230,32 @@ module dao_factory::petra {
 
     public entry fun approve_launcher(admin: &signer, launcher: address) acquires FactoryConfig, LauncherRegistry {
         assert_admin(admin);
-        let registry = borrow_global_mut<LauncherRegistry>(@admin);
+        let registry = borrow_global_mut<LauncherRegistry>(@dao_factory);
         smart_table::upsert(&mut registry.approved_launchers, launcher, true);
     }
 
     public entry fun revoke_launcher(admin: &signer, launcher: address) acquires FactoryConfig, LauncherRegistry {
         assert_admin(admin);
-        let registry = borrow_global_mut<LauncherRegistry>(@admin);
+        let registry = borrow_global_mut<LauncherRegistry>(@dao_factory);
         smart_table::upsert(&mut registry.approved_launchers, launcher, false);
     }
 
     public entry fun set_creation_fee(admin: &signer, new_fee: u64) acquires FactoryConfig {
         assert_admin(admin);
         assert!(new_fee <= MAX_CREATION_FEE, error::invalid_argument(E_FEE_TOO_HIGH));
-        let config = borrow_global_mut<FactoryConfig>(@admin);
+        let config = borrow_global_mut<FactoryConfig>(@dao_factory);
         config.creation_fee = new_fee;
     }
 
     public entry fun set_fee_receiver(admin: &signer, new_receiver: address) acquires FactoryConfig {
         assert_admin(admin);
-        let config = borrow_global_mut<FactoryConfig>(@admin);
+        let config = borrow_global_mut<FactoryConfig>(@dao_factory);
         config.fee_receiver = new_receiver;
     }
 
     public entry fun add_default_bribe_token(admin: &signer, token_addr: address) acquires FactoryConfig {
         assert_admin(admin);
-        let config = borrow_global_mut<FactoryConfig>(@admin);
+        let config = borrow_global_mut<FactoryConfig>(@dao_factory);
         if (!vector::contains(&config.default_bribe_tokens, &token_addr)) {
             vector::push_back(&mut config.default_bribe_tokens, token_addr);
         }
@@ -263,7 +263,7 @@ module dao_factory::petra {
 
     public entry fun remove_default_bribe_token(admin: &signer, token_addr: address) acquires FactoryConfig {
         assert_admin(admin);
-        let config = borrow_global_mut<FactoryConfig>(@admin);
+        let config = borrow_global_mut<FactoryConfig>(@dao_factory);
         let (found, index) = vector::index_of(&config.default_bribe_tokens, &token_addr);
         if (found) {
             vector::remove(&mut config.default_bribe_tokens, index);
@@ -282,7 +282,7 @@ module dao_factory::petra {
 
     public entry fun set_default_config(admin: &signer, config_key: u8, value: u64) acquires FactoryConfig {
         assert_admin(admin);
-        let config = borrow_global_mut<FactoryConfig>(@admin);
+        let config = borrow_global_mut<FactoryConfig>(@dao_factory);
         
         if (config_key == 0) {
             assert_bounds(value, 1, config.default_quorum_denominator, E_INVALID_QUORUM);
@@ -333,7 +333,7 @@ module dao_factory::petra {
     // This is irreversible - once renounced, no one is admin.
     public entry fun renounce_admin(admin: &signer) acquires FactoryConfig {
         assert_admin(admin);
-        let config = borrow_global_mut<FactoryConfig>(@admin);
+        let config = borrow_global_mut<FactoryConfig>(@dao_factory);
         let old_admin = config.admin_address;
         config.admin_address = @0x0;
         config.pending_admin_address = @0x0; // Clear any pending transfer too
@@ -348,14 +348,14 @@ module dao_factory::petra {
     ) acquires FactoryConfig, DaoRegistry, LauncherRegistry {
         charge_creation_fee(creator);
 
-        let config = borrow_global<FactoryConfig>(@admin);
-        let registry = borrow_global<DaoRegistry>(@admin);
+        let config = borrow_global<FactoryConfig>(@dao_factory);
+        let registry = borrow_global<DaoRegistry>(@dao_factory);
         assert!(
             !smart_table::contains(&registry.registered_tokens, governance_token),
             error::already_exists(E_DAO_ALREADY_EXISTS)
         );
 
-        let launcher_registry = borrow_global<LauncherRegistry>(@admin);
+        let launcher_registry = borrow_global<LauncherRegistry>(@dao_factory);
         assert!(
             !smart_table::contains(&launcher_registry.claimed_tokens, governance_token),
             error::permission_denied(E_TOKEN_CLAIMED_BY_LAUNCHER)
@@ -371,7 +371,7 @@ module dao_factory::petra {
     // this `expected_supply`. If the real supply ends up being significantly lower than `expected_supply`, 
     // the DAO's proposal thresholds will be mathematically impossible to reach, freezing governance forever.
     fun assert_launcher(launcher_address: address) acquires LauncherRegistry {
-        let launcher_registry = borrow_global<LauncherRegistry>(@admin);
+        let launcher_registry = borrow_global<LauncherRegistry>(@dao_factory);
         assert!(
             smart_table::contains(&launcher_registry.approved_launchers, launcher_address) && 
             *smart_table::borrow(&launcher_registry.approved_launchers, launcher_address),
@@ -380,7 +380,7 @@ module dao_factory::petra {
     }
 
     fun assert_valid_dao(dao_address: address, governance_token: Object<Metadata>) acquires DaoRegistry {
-        let registry = borrow_global<DaoRegistry>(@admin);
+        let registry = borrow_global<DaoRegistry>(@dao_factory);
         let registered_dao = *smart_table::borrow(&registry.registered_tokens, governance_token);
         assert!(registered_dao == dao_address, error::invalid_argument(E_UNAUTHORIZED_LAUNCHER));
     }
@@ -396,8 +396,8 @@ module dao_factory::petra {
 
         charge_creation_fee(creator);
 
-        let config = borrow_global<FactoryConfig>(@admin);
-        let registry = borrow_global<DaoRegistry>(@admin);
+        let config = borrow_global<FactoryConfig>(@dao_factory);
+        let registry = borrow_global<DaoRegistry>(@dao_factory);
         assert!(
             !smart_table::contains(&registry.registered_tokens, governance_token),
             error::already_exists(E_DAO_ALREADY_EXISTS)
@@ -460,7 +460,7 @@ module dao_factory::petra {
         initialize_core_modules(&dao_signer, signer_cap, name, config, current_supply, launcher_address, false, governance_token, dao_address);
         sentinel::initialize(&dao_signer);
 
-        let registry = borrow_global_mut<DaoRegistry>(@admin);
+        let registry = borrow_global_mut<DaoRegistry>(@dao_factory);
         smart_table::add(&mut registry.registered_tokens, governance_token, dao_address);
 
         emit_dao_created(signer::address_of(creator), dao_address, object::object_address(&governance_token), name, false);
@@ -475,14 +475,14 @@ module dao_factory::petra {
         governance_token: Object<Metadata>,
         mint_ref: MintRef
     ): address acquires FactoryConfig, DaoRegistry, LauncherRegistry {
-        let launcher_registry = borrow_global<LauncherRegistry>(@admin);
+        let launcher_registry = borrow_global<LauncherRegistry>(@dao_factory);
         assert!(
             !smart_table::contains(&launcher_registry.claimed_tokens, governance_token),
             error::permission_denied(E_TOKEN_CLAIMED_BY_LAUNCHER)
         );
 
         charge_creation_fee(creator);
-        let config = borrow_global<FactoryConfig>(@admin);
+        let config = borrow_global<FactoryConfig>(@dao_factory);
         create_dao_inflationary_internal(creator, governance_token, option::some(mint_ref), config, @0x0, option::none(), vector::empty<address>())
     }
 
@@ -491,7 +491,7 @@ module dao_factory::petra {
         governance_token: Object<Metadata>
     ) acquires LauncherRegistry {
         let launcher_address = signer::address_of(launcher_signer);
-        let launcher_registry = borrow_global_mut<LauncherRegistry>(@admin);
+        let launcher_registry = borrow_global_mut<LauncherRegistry>(@dao_factory);
         assert!(
             smart_table::contains(&launcher_registry.approved_launchers, launcher_address) && 
             *smart_table::borrow(&launcher_registry.approved_launchers, launcher_address),
@@ -505,7 +505,7 @@ module dao_factory::petra {
         governance_token: Object<Metadata>
     ) acquires FactoryConfig, LauncherRegistry {
         assert_admin(admin);
-        let launcher_registry = borrow_global_mut<LauncherRegistry>(@admin);
+        let launcher_registry = borrow_global_mut<LauncherRegistry>(@dao_factory);
         smart_table::remove(&mut launcher_registry.claimed_tokens, governance_token);
     }
 
@@ -526,7 +526,7 @@ module dao_factory::petra {
         assert_launcher(launcher_address);
 
         charge_creation_fee(creator);
-        let config = borrow_global<FactoryConfig>(@admin);
+        let config = borrow_global<FactoryConfig>(@dao_factory);
         create_dao_inflationary_internal(creator, governance_token, option::none(), config, launcher_address, option::some(expected_supply), amm_pool_addresses)
     }
 
@@ -539,7 +539,7 @@ module dao_factory::petra {
         expected_supply_opt: option::Option<u128>,
         amm_pool_addresses: vector<address>
     ): address acquires DaoRegistry {
-        let registry = borrow_global_mut<DaoRegistry>(@admin);
+        let registry = borrow_global_mut<DaoRegistry>(@dao_factory);
         assert!(
             !smart_table::contains(&registry.registered_tokens, governance_token),
             error::already_exists(E_DAO_ALREADY_EXISTS)
@@ -639,7 +639,7 @@ module dao_factory::petra {
         assert_launcher(launcher_addr);
         assert_valid_dao(dao_address, governance_token);
 
-        let config = borrow_global<FactoryConfig>(@admin);
+        let config = borrow_global<FactoryConfig>(@dao_factory);
         recalculate_threshold(dao_address, governance_token, config.default_proposal_threshold_ppm);
     }
 
@@ -670,7 +670,7 @@ module dao_factory::petra {
         assert!(test_metadata == governance_token, error::invalid_argument(E_UNAUTHORIZED_LAUNCHER));
         fungible_asset::destroy_zero(test_mint);
 
-        let config = borrow_global<FactoryConfig>(@admin);
+        let config = borrow_global<FactoryConfig>(@dao_factory);
         recalculate_threshold(dao_address, governance_token, config.default_proposal_threshold_ppm);
 
         init_jubilee_internal(&ledger::generate_signer(dao_address), mint_ref, config, {
@@ -686,18 +686,18 @@ module dao_factory::petra {
 
     #[view]
     public fun is_admin_active(): bool acquires FactoryConfig {
-        let config = borrow_global<FactoryConfig>(@admin);
+        let config = borrow_global<FactoryConfig>(@dao_factory);
         config.admin_address != @0x0
     }
 
     #[view]
     public fun get_creation_fee(): u64 acquires FactoryConfig {
-        borrow_global<FactoryConfig>(@admin).creation_fee
+        borrow_global<FactoryConfig>(@dao_factory).creation_fee
     }
 
     #[view]
     public fun get_dao_for_token(token: Object<Metadata>): option::Option<address> acquires DaoRegistry {
-        let registry = borrow_global<DaoRegistry>(@admin);
+        let registry = borrow_global<DaoRegistry>(@dao_factory);
         if (smart_table::contains(&registry.registered_tokens, token)) {
             option::some(*smart_table::borrow(&registry.registered_tokens, token))
         } else {

@@ -5,8 +5,8 @@ authors = []
 
 [addresses]
 
-HOPE = "0x9a63b4ff0e6ec6cefa033bd323bd2ea6f6cf2a3c580ae5ba076f087c7d12ec53"
-dao_tokens = "0x90f6bcf84915b4737fe7b371fb84fa76dc0d625f595f58fc5d98bff119018996"
+HOGLET = "0x17aecc0a267c77a70f51db8070f504bce55d64de886e675b52bd9143729897d9"
+dao_tokens = "0x1eba8465567e01718a19b95ce04ae2b7d5b7f81d41ce2683ee72e97a4ddc8657"
 
 [dev-addresses]
 
