@@ -7,7 +7,7 @@ authors = []
 
 HOPE = "0x9a63b4ff0e6ec6cefa033bd323bd2ea6f6cf2a3c580ae5ba076f087c7d12ec53"
 dao_factory = "0x1245fb3a175bc8e3abe55a9d5222b7d64b341fccb0213ee8262e6277e3d59399"
-admin = "_"
+admin = "0x9a63b4ff0e6ec6cefa033bd323bd2ea6f6cf2a3c580ae5ba076f087c7d12ec53"
 
 [dev-addresses]
 
