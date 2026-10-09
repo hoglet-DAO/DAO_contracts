@@ -4,8 +4,8 @@ version = "1.0.0"
 
 [addresses]
 
-HOGLET = "0x17aecc0a267c77a70f51db8070f504bce55d64de886e675b52bd9143729897d9"
-dao_factory = "0x17aecc0a267c77a70f51db8070f504bce55d64de886e675b52bd9143729897d9"
+HOPE = "0x9a63b4ff0e6ec6cefa033bd323bd2ea6f6cf2a3c580ae5ba076f087c7d12ec53"
+dao_router = "0xaf6b500aa29614eed0be9489f2c0a2f9cd68ed712139965e0210a996589e0596"
 
 [dependencies.SupraFramework]
 git = "https://github.com/Entropy-Foundation/aptos-core.git"
@@ -20,11 +20,12 @@ subdir = "aptos-move/framework/aptos-token-objects"
 [dependencies.hoglet_dao]
 git = "https://github.com/hoglet-DAO/DAO_contracts.git"
 rev = "main"
-subdir = "mainnet/dao_factory"
+subdir = "testnet/dao_factory"
 
 [dependencies.hoglet_core]
-git = "https://github.com/hoglet-DAO/spike.git"
+git = "https://github.com/hoglet-DAO/hoglet_launcher.git"
 rev = "main"
+subdir = "testnet/hoglet_core"
 
 [dependencies.nft_wrap]
 git = "https://github.com/hoglet-DAO/nft_wrapper.git"
