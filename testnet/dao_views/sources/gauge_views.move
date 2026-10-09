@@ -4,7 +4,7 @@
 // required. Semantics are identical to the original
 // zeal::find_gauge_by_staking_token: sparse gauge ids (removed/never-filled
 // slots) are skipped, mirroring the original smart_table::contains guard.
-module dao_factory::gauge_views {
+module dao_views::gauge_views {
     use dao_factory::foundry;
     use dao_factory::zeal;
 
