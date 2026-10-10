@@ -177,18 +177,12 @@ module dao_factory::herald {
         // SECURITY FIX (M11): Use historical total_locked matching the check_epoch to prevent quorum griefing
         let total_locked = legacy::get_total_locked_at(dao_address, check_epoch);
         
-        let quorum_required = if (is_super_quorum) {
-            if (quorum_den > 0) {
-                math::mul_div_u64(total_locked, super_quorum_threshold, quorum_den)
-            } else {
-                0
-            }
+        let quorum_required = if (quorum_den == 0) {
+            0
+        } else if (is_super_quorum) {
+            math::mul_div_u64(total_locked, super_quorum_threshold, quorum_den)
         } else {
-            let default_quorum = if (quorum_den > 0) {
-                math::mul_div_u64(total_locked, quorum_num, quorum_den)
-            } else {
-                0
-            };
+            let default_quorum = math::mul_div_u64(total_locked, quorum_num, quorum_den);
             ledger::get_dynamic_quorum(dao_address, default_quorum)
         };
         
@@ -207,49 +201,6 @@ module dao_factory::herald {
     ) acquires HeraldState {
         let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required) = 
             validate_and_prepare_proposal(proposer, legacy_addr, dao_address, false);
-
-        // Create and store the treasury proposal.
-        let new_proposal = ledger::new_treasury_proposal(
-            proposal_id,
-            proposer_addr,
-            ve_token_addr,
-            title,
-            description_hash,
-            start_time,
-            end_time,
-            quorum_required,
-            asset_address,
-            recipient,
-            amount,
-        );
-        ledger::add_proposal(dao_address, proposal_id, new_proposal);
-
-        emit_proposal_event(
-            dao_address, proposal_id, proposer_addr, title, 1, start_time, end_time,
-            @0x0, asset_address, recipient, amount, 0, 0, description_hash, vector::empty(), vector::empty()
-        );
-    }
-
-    public entry fun propose_treasury_transfer_coin<CoinType>(
-        proposer: &signer,
-        legacy_addr: address,
-        dao_address: address,
-        title: String,
-        description_hash: vector<u8>,
-        recipient: address,
-        amount: u64,
-    ) acquires HeraldState {
-        let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required) = 
-            validate_and_prepare_proposal(proposer, legacy_addr, dao_address, false);
-
-        // Map CoinType to FA Metadata Address. If none exists, assume native coin (@0x1)
-        let metadata_opt = supra_framework::coin::paired_metadata<CoinType>();
-        let asset_address = if (std::option::is_some(&metadata_opt)) {
-            let metadata = std::option::extract(&mut metadata_opt);
-            object::object_address(&metadata)
-        } else {
-            @0x1
-        };
 
         // Create and store the treasury proposal.
         let new_proposal = ledger::new_treasury_proposal(
@@ -582,26 +533,7 @@ module dao_factory::herald {
         );
     }
 
-    /// Creates a proposal to execute a static (parameterless) Move script (type 9).
-    /// Auto-fills args_commitment with keccak256(empty).
-    public entry fun propose_static_script(
-        proposer: &signer,
-        legacy_addr: address,
-        dao_address: address,
-        title: String,
-        description_hash: vector<u8>,
-        script_id: u64,
-    ) acquires HeraldState {
-        propose_script(
-            proposer,
-            legacy_addr,
-            dao_address,
-            title,
-            description_hash,
-            script_id,
-            aptos_hash::keccak256(vector::empty<u8>()),
-        );
-    }
+
 
     /// Type 10: add/remove a script id from the DAO's allow-list (vault).
     /// Super quorum: the allow-list is what enables script execution.

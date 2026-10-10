@@ -180,16 +180,12 @@ module dao_factory::charter {
             assert!(config.super_quorum_threshold * 100 / config_value >= 50, error::invalid_argument(E_INVALID_QUORUM));
         } else if (config_key == 3) {
             assert_bounds(config_value, 0, MAX_DELAY_SECONDS, E_INVALID_DELAY);
-        } else if (config_key == 4) {
+        } else if (config_key == 4 || config_key == 7) {
             assert_bounds(config_value, MIN_DELAY_SECONDS, MAX_DELAY_SECONDS, E_INVALID_DELAY);
-        } else if (config_key == 5) {
+        } else if (config_key == 5 || config_key == 8) {
             assert_bounds(config_value, MIN_PERIOD_SECONDS, MAX_DELAY_SECONDS, E_INVALID_PERIOD);
         } else if (config_key == 6) {
             assert!(config_value > 0, error::invalid_argument(E_INVALID_THRESHOLD));
-        } else if (config_key == 7) {
-            assert_bounds(config_value, MIN_DELAY_SECONDS, MAX_DELAY_SECONDS, E_INVALID_DELAY);
-        } else if (config_key == 8) {
-            assert_bounds(config_value, MIN_PERIOD_SECONDS, MAX_DELAY_SECONDS, E_INVALID_PERIOD);
         } else {
             abort error::invalid_argument(E_INVALID_DELAY) // or E_INVALID_CONFIG_KEY
         };

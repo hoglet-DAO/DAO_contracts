@@ -293,33 +293,27 @@ module dao_factory::petra {
         } else if (config_key == 3) {
             math::assert_bounds(value, 0, charter::max_delay_seconds(), E_INVALID_EXTENSION);
             config.default_late_quorum_extension = value;
-        } else if (config_key == 4) {
-            math::assert_bounds(value, charter::min_delay_seconds(), charter::max_delay_seconds(), E_INVALID_VOTING_DELAY);
-            config.default_voting_delay = value;
+        } else if (config_key == 4 || config_key == 7) {
+            math::assert_bounds(value, charter::min_delay_seconds(), charter::max_delay_seconds(), if (config_key == 4) E_INVALID_VOTING_DELAY else E_INVALID_TIMELOCK);
+            if (config_key == 4) config.default_voting_delay = value else config.default_timelock_delay = value;
         } else if (config_key == 5) {
             math::assert_bounds(value, charter::min_period_seconds(), charter::max_delay_seconds(), E_INVALID_VOTING_PERIOD);
             config.default_voting_period = value;
         } else if (config_key == 6) {
             math::assert_bounds(value, 1, 1_000_000, E_INVALID_THRESHOLD_PPM);
             config.default_proposal_threshold_ppm = value;
-        } else if (config_key == 7) {
-            math::assert_bounds(value, charter::min_delay_seconds(), charter::max_delay_seconds(), E_INVALID_TIMELOCK);
-            config.default_timelock_delay = value;
         } else if (config_key == 8) {
             math::assert_bounds(value, 0, 31536000, E_INVALID_GRACE_PERIOD);
             config.default_grace_period = value;
         } else if (config_key == 9) {
             math::assert_bounds(value, 0, 500, E_DECAY_TOO_HIGH);
             config.default_decay_bps = value;
-        } else if (config_key == 10) {
+        } else if (config_key == 10 || config_key == 12) {
             math::assert_bounds(value, 0, 1_000_000, E_INVALID_EMISSION_PPM);
-            config.default_tail_emission_ppm = value;
+            if (config_key == 10) config.default_tail_emission_ppm = value else config.default_initial_emission_ppm = value;
         } else if (config_key == 11) {
             math::assert_bounds(value, 8000, 10000, E_GAUGE_SPLIT_TOO_LOW);
             config.default_gauge_split_bps = value;
-        } else if (config_key == 12) {
-            math::assert_bounds(value, 0, 1_000_000, E_INVALID_EMISSION_PPM);
-            config.default_initial_emission_ppm = value;
         } else {
             abort error::invalid_argument(E_INVALID_ADDRESS)
         };
@@ -338,34 +332,33 @@ module dao_factory::petra {
 
     // Static DAO (For tokens with fixed supply) 
 
-    public entry fun create_dao_static(
-        creator: &signer,
-        governance_token: Object<Metadata>
-    ) acquires FactoryConfig, DaoRegistry, LauncherRegistry {
-        charge_creation_fee(creator);
-
-        let config = borrow_global<FactoryConfig>(@dao_factory);
+    fun assert_token_not_registered(governance_token: Object<Metadata>) acquires DaoRegistry {
         let registry = borrow_global<DaoRegistry>(@dao_factory);
         assert!(
             !smart_table::contains(&registry.registered_tokens, governance_token),
             error::already_exists(E_DAO_ALREADY_EXISTS)
         );
+    }
 
+    fun assert_token_not_claimed(governance_token: Object<Metadata>) acquires LauncherRegistry {
         let launcher_registry = borrow_global<LauncherRegistry>(@dao_factory);
         assert!(
             !smart_table::contains(&launcher_registry.claimed_tokens, governance_token),
             error::permission_denied(E_TOKEN_CLAIMED_BY_LAUNCHER)
         );
+    }
 
+    public entry fun create_dao_static(
+        creator: &signer,
+        governance_token: Object<Metadata>
+    ) acquires FactoryConfig, DaoRegistry, LauncherRegistry {
+        charge_creation_fee(creator);
+        assert_token_not_claimed(governance_token);
+
+        let config = borrow_global<FactoryConfig>(@dao_factory);
         create_dao_static_internal(creator, governance_token, config, @0x0, option::none());
     }
 
-    // Static DAO (Called exclusively by an approved Launcher)
-    // CRITICAL SAFETY WARNING: 
-    // The `expected_supply` parameter is used to permanently calculate governance thresholds at initialization.
-    // The caller (launcher) MUST mathematically guarantee that the final real token supply generated matches 
-    // this `expected_supply`. If the real supply ends up being significantly lower than `expected_supply`, 
-    // the DAO's proposal thresholds will be mathematically impossible to reach, freezing governance forever.
     fun assert_launcher(launcher_address: address) acquires LauncherRegistry {
         let launcher_registry = borrow_global<LauncherRegistry>(@dao_factory);
         assert!(
@@ -393,11 +386,6 @@ module dao_factory::petra {
         charge_creation_fee(creator);
 
         let config = borrow_global<FactoryConfig>(@dao_factory);
-        let registry = borrow_global<DaoRegistry>(@dao_factory);
-        assert!(
-            !smart_table::contains(&registry.registered_tokens, governance_token),
-            error::already_exists(E_DAO_ALREADY_EXISTS)
-        );
 
         let dao_address = create_dao_static_internal(
             creator, governance_token, config, launcher_address, option::some(expected_supply)
@@ -451,6 +439,7 @@ module dao_factory::petra {
         launcher_address: address,
         expected_supply_opt: option::Option<u128>,
     ): address acquires DaoRegistry {
+        assert_token_not_registered(governance_token);
         let (dao_signer, signer_cap, dao_address, name, current_supply) = prepare_dao_creation(creator, governance_token, expected_supply_opt);
 
         initialize_core_modules(&dao_signer, signer_cap, name, config, current_supply, launcher_address, false, governance_token, dao_address);
@@ -471,11 +460,7 @@ module dao_factory::petra {
         governance_token: Object<Metadata>,
         mint_ref: MintRef
     ): address acquires FactoryConfig, DaoRegistry, LauncherRegistry {
-        let launcher_registry = borrow_global<LauncherRegistry>(@dao_factory);
-        assert!(
-            !smart_table::contains(&launcher_registry.claimed_tokens, governance_token),
-            error::permission_denied(E_TOKEN_CLAIMED_BY_LAUNCHER)
-        );
+        assert_token_not_claimed(governance_token);
 
         charge_creation_fee(creator);
         let config = borrow_global<FactoryConfig>(@dao_factory);
@@ -535,11 +520,8 @@ module dao_factory::petra {
         expected_supply_opt: option::Option<u128>,
         amm_pool_addresses: vector<address>
     ): address acquires DaoRegistry {
+        assert_token_not_registered(governance_token);
         let registry = borrow_global_mut<DaoRegistry>(@dao_factory);
-        assert!(
-            !smart_table::contains(&registry.registered_tokens, governance_token),
-            error::already_exists(E_DAO_ALREADY_EXISTS)
-        );
 
         let (dao_signer, signer_cap, dao_address, name, current_supply) = prepare_dao_creation(creator, governance_token, expected_supply_opt);
 

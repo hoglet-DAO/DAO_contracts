@@ -35,7 +35,6 @@ module dao_factory::anchor {
     const E_INVALID_ACTION: u64 = 12;
     const E_INVALID_PROPOSAL_TYPE: u64 = 13;
     const E_NOT_INFLATIONARY: u64 = 14;
-    const E_NO_COINS_TO_WRAP: u64 = 15;
     const E_PROPOSAL_NOT_EXPIRED: u64 = 16;
     const E_SCRIPT_HASH_MISMATCH: u64 = 17;
 
@@ -316,25 +315,6 @@ module dao_factory::anchor {
             // Mark it as finalized in the ledger without affecting the moving average quorum
             ledger::record_participation(dao_address, proposal_id, 0); // Assuming 0 skips the EMA calculation, or we need a specific function.
         };
-    }
-
-    /// Allows anyone to wrap legacy coins residing in the DAO's CoinStore into Fungible Assets.
-    /// This is a permissionless maintenance crank to ensure the treasury remains FA-native.
-    public entry fun wrap_legacy_coins<CoinType>(_caller: &signer, dao_address: address) {
-        let balance = coin::balance<CoinType>(dao_address);
-        assert!(balance > 0, error::invalid_state(E_NO_COINS_TO_WRAP));
-
-        // We need the DAO's signer to withdraw from its own CoinStore
-        let dao_signer = ledger::generate_signer(dao_address);
-        
-        // Withdraw the entire legacy coin balance
-        let coins = coin::withdraw<CoinType>(&dao_signer, balance);
-
-        // Convert the legacy coins to fungible assets
-        let fa = coin::coin_to_fungible_asset(coins);
-
-        // Deposit the fungible assets back into the DAO's PrimaryFungibleStore
-        primary_fungible_store::deposit(dao_address, fa);
     }
 
     // --- Helpers for Deduplication ---
