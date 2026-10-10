@@ -9,6 +9,7 @@ module dao_factory::foundry {
     use supra_framework::fungible_asset::{Self, Metadata, FungibleAsset};
     use supra_framework::primary_fungible_store;
     use aptos_std::smart_table::{Self, SmartTable};
+    use aptos_std::math128;
     use supra_framework::timestamp;
     use std::error;
     use supra_framework::event;

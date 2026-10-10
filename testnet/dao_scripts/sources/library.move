@@ -35,7 +35,7 @@ module dao_scripts::library {
         execution_hash: vector<u8>, // sha3-256 of the compiled Move script bytecode
         source_cid: String,         // IPFS CID of the source project (Move.toml + sources)
         category: u8,               // free-form tag for discoverability
-        has_args: bool,             // true: parameterized (seal::resolve_with_args), false: static (seal::resolve)
+        has_args: bool,             // true: parameterized (seal::resolve with args), false: static (seal::resolve with b"")
         author: address,            // who submitted it
         audited: bool,              // set by the admin (Hoglet DAO)
         created_at: u64,

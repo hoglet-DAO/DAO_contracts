@@ -15,6 +15,7 @@ module dao_factory::ledger {
     use supra_framework::timestamp;
     use supra_framework::account::{Self, SignerCapability};
     use aptos_std::smart_table::{Self, SmartTable};
+    use dao_libs::math;
 
     const E_PROPOSAL_NOT_FOUND: u64 = 4;
     const E_NOT_FOUND: u64 = 6;
@@ -511,41 +512,7 @@ module dao_factory::ledger {
     #[view]
     public fun get_dynamic_quorum(dao_address: address, default_quorum: u64): u64 acquires DaoState {
         let state = borrow_global<DaoState>(dao_address);
-        let len = vector::length(&state.recent_participations);
-        if (len == 0) {
-            return default_quorum
-        };
-
-        let sum: u128 = 0;
-        let i = 0;
-        while (i < len) {
-            sum = sum + *vector::borrow(&state.recent_participations, i);
-            i = i + 1;
-        };
-
-        let avg = sum / (len as u128);
-        let raw_dynamic_quorum = avg / 2; // 50% of the average recent participation
-        
-        // --- Smoothing (Volatility Clamp) ---
-        // Prevents the quorum from jumping too aggressively from the default quorum.
-        // The dynamic quorum can be at most 200% of the default quorum and at least 10% of the default quorum.
-        
-        let max_ceiling = ((default_quorum as u128) * 200) / 100;
-        let min_floor = ((default_quorum as u128) * 10) / 100;
-        
-        if (min_floor == 0 && default_quorum > 0) {
-            min_floor = 1;
-        };
-
-        let clamped_quorum = if (raw_dynamic_quorum > max_ceiling) {
-            max_ceiling
-        } else if (raw_dynamic_quorum < min_floor) {
-            min_floor
-        } else {
-            raw_dynamic_quorum
-        };
-
-        (clamped_quorum as u64)
+        math::calculate_dynamic_quorum(&state.recent_participations, default_quorum)
     }
 
     // --- Helpers for Deduplication ---

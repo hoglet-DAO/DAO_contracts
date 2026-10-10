@@ -89,7 +89,7 @@ module dao_factory::anchor {
     ///
     /// `public(friend)` ON PURPOSE: scripts must NOT call this directly, because
     /// it does not verify the args commitment nor the vault allow-list. The ONLY
-    /// public entry point is `seal::resolve_with_args`, which checks both and
+    /// public entry point is `seal::resolve`, which checks both and
     /// then delegates here. This closes the "call anchor::resolve directly to
     /// bypass seal" attack (HOG-01).
     public(friend) fun resolve(dao_address: address, proposal_id: u64): signer {

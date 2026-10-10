@@ -276,53 +276,49 @@ module dao_factory::petra {
     // causing every new DAO creation to abort, or producing governance
     // parameters outside safe limits.
     
-    fun assert_bounds(value: u64, min: u64, max: u64, err_code: u64) {
-        math::assert_bounds(value, min, max, err_code);
-    }
-
     public entry fun set_default_config(admin: &signer, config_key: u8, value: u64) acquires FactoryConfig {
         assert_admin(admin);
         let config = borrow_global_mut<FactoryConfig>(@dao_factory);
         
         if (config_key == 0) {
-            assert_bounds(value, 1, config.default_quorum_denominator, E_INVALID_QUORUM);
+            math::assert_bounds(value, 1, config.default_quorum_denominator, E_INVALID_QUORUM);
             assert!(value * 100 / config.default_quorum_denominator >= 50, error::invalid_argument(E_INVALID_QUORUM));
             config.default_super_quorum_threshold = value;
         } else if (config_key == 1) {
-            assert_bounds(value, 1, config.default_quorum_denominator, E_INVALID_QUORUM);
+            math::assert_bounds(value, 1, config.default_quorum_denominator, E_INVALID_QUORUM);
             config.default_quorum_numerator = value;
         } else if (config_key == 2) {
             assert!(value >= config.default_quorum_numerator && value >= config.default_super_quorum_threshold, error::invalid_argument(E_INVALID_QUORUM));
             config.default_quorum_denominator = value;
         } else if (config_key == 3) {
-            assert_bounds(value, 0, charter::max_delay_seconds(), E_INVALID_EXTENSION);
+            math::assert_bounds(value, 0, charter::max_delay_seconds(), E_INVALID_EXTENSION);
             config.default_late_quorum_extension = value;
         } else if (config_key == 4) {
-            assert_bounds(value, charter::min_delay_seconds(), charter::max_delay_seconds(), E_INVALID_VOTING_DELAY);
+            math::assert_bounds(value, charter::min_delay_seconds(), charter::max_delay_seconds(), E_INVALID_VOTING_DELAY);
             config.default_voting_delay = value;
         } else if (config_key == 5) {
-            assert_bounds(value, charter::min_period_seconds(), charter::max_delay_seconds(), E_INVALID_VOTING_PERIOD);
+            math::assert_bounds(value, charter::min_period_seconds(), charter::max_delay_seconds(), E_INVALID_VOTING_PERIOD);
             config.default_voting_period = value;
         } else if (config_key == 6) {
-            assert_bounds(value, 1, 1_000_000, E_INVALID_THRESHOLD_PPM);
+            math::assert_bounds(value, 1, 1_000_000, E_INVALID_THRESHOLD_PPM);
             config.default_proposal_threshold_ppm = value;
         } else if (config_key == 7) {
-            assert_bounds(value, charter::min_delay_seconds(), charter::max_delay_seconds(), E_INVALID_TIMELOCK);
+            math::assert_bounds(value, charter::min_delay_seconds(), charter::max_delay_seconds(), E_INVALID_TIMELOCK);
             config.default_timelock_delay = value;
         } else if (config_key == 8) {
-            assert_bounds(value, 0, 31536000, E_INVALID_GRACE_PERIOD);
+            math::assert_bounds(value, 0, 31536000, E_INVALID_GRACE_PERIOD);
             config.default_grace_period = value;
         } else if (config_key == 9) {
-            assert_bounds(value, 0, 500, E_DECAY_TOO_HIGH);
+            math::assert_bounds(value, 0, 500, E_DECAY_TOO_HIGH);
             config.default_decay_bps = value;
         } else if (config_key == 10) {
-            assert_bounds(value, 0, 1_000_000, E_INVALID_EMISSION_PPM);
+            math::assert_bounds(value, 0, 1_000_000, E_INVALID_EMISSION_PPM);
             config.default_tail_emission_ppm = value;
         } else if (config_key == 11) {
-            assert_bounds(value, 8000, 10000, E_GAUGE_SPLIT_TOO_LOW);
+            math::assert_bounds(value, 8000, 10000, E_GAUGE_SPLIT_TOO_LOW);
             config.default_gauge_split_bps = value;
         } else if (config_key == 12) {
-            assert_bounds(value, 0, 1_000_000, E_INVALID_EMISSION_PPM);
+            math::assert_bounds(value, 0, 1_000_000, E_INVALID_EMISSION_PPM);
             config.default_initial_emission_ppm = value;
         } else {
             abort error::invalid_argument(E_INVALID_ADDRESS)

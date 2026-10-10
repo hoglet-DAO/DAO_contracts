@@ -68,4 +68,41 @@ module dao_libs::math {
     public fun calculate_boosted_working_balance(actual_balance: u128, boost_bps: u64): u128 {
         actual_balance * (10000 + (boost_bps as u128)) / 10000
     }
+
+    /// Computes the dynamic quorum from recent participations:
+    /// 50% of average recent participation, clamped to [10%, 200%] of default_quorum.
+    public fun calculate_dynamic_quorum(participations: &vector<u128>, default_quorum: u64): u64 {
+        let len = std::vector::length(participations);
+        if (len == 0) {
+            return default_quorum
+        };
+
+        let sum: u128 = 0;
+        let i = 0;
+        while (i < len) {
+            sum = sum + *std::vector::borrow(participations, i);
+            i = i + 1;
+        };
+
+        let avg = sum / (len as u128);
+        let raw_dynamic_quorum = avg / 2;
+        
+        let max_ceiling = ((default_quorum as u128) * 200) / 100;
+        let min_floor = ((default_quorum as u128) * 10) / 100;
+        
+        if (min_floor == 0 && default_quorum > 0) {
+            min_floor = 1;
+        };
+
+        let clamped_quorum = if (raw_dynamic_quorum > max_ceiling) {
+            max_ceiling
+        } else if (raw_dynamic_quorum < min_floor) {
+            min_floor
+        } else {
+            raw_dynamic_quorum
+        };
+
+        (clamped_quorum as u64)
+    }
 }
+
