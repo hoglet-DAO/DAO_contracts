@@ -16,4 +16,4 @@ subdir = "aptos-move/framework/supra-framework"
 [dependencies.hoglet_dao]
 git = "https://github.com/hoglet-DAO/DAO_contracts.git"
 rev = "main"
-subdir = "testnet/dao_factory"
+subdir = "mainnet/dao_factory"
