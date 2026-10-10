@@ -665,16 +665,4 @@ module dao_factory::herald {
             args_commitment,
         });
     }
-
-    public entry fun harvest_poel_rewards(dao_address: address) {
-        let dao_signer = ledger::generate_signer(dao_address);
-        let current_time = timestamp::now_seconds();
-        let phases_since_epoch = current_time / 86400;
-        
-        if (phases_since_epoch % 2 == 0) {
-            dfmm_framework::poel::claim_rewards(&dao_signer);
-        } else {
-            dfmm_framework::poel::withdraw_rewards(&dao_signer);
-        };
-    }
 }

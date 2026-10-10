@@ -1,4 +1,5 @@
 module dao_libs::math {
+    use std::error;
 
     const PRECISION: u256 = 1_000_000_000_000_000_000;
 
@@ -55,5 +56,16 @@ module dao_libs::math {
     /// Applies a Parts Per Million (PPM) percentage to an amount. 1_000_000 PPM = 100%.
     public fun apply_ppm(amount: u128, ppm: u64): u64 {
         (((amount * (ppm as u128)) / 1000000) as u64)
+    }
+
+    /// Asserts that a value lies within [min, max] inclusive.
+    public fun assert_bounds(value: u64, min: u64, max: u64, err_code: u64) {
+        assert!(value >= min && value <= max, error::invalid_argument(err_code));
+    }
+
+    /// Calculates Curve/Velodrome-style working balance with boost:
+    /// working = actual * (10000 + boost_bps) / 10000
+    public fun calculate_boosted_working_balance(actual_balance: u128, boost_bps: u64): u128 {
+        actual_balance * (10000 + (boost_bps as u128)) / 10000
     }
 }

@@ -9,13 +9,13 @@ module dao_factory::foundry {
     use supra_framework::fungible_asset::{Self, Metadata, FungibleAsset};
     use supra_framework::primary_fungible_store;
     use aptos_std::smart_table::{Self, SmartTable};
-    use aptos_std::math128;
     use supra_framework::timestamp;
     use std::error;
     use supra_framework::event;
     use std::vector;
     use aptos_token_objects::token;
     use dao_libs::pilgrim;
+    use dao_libs::math;
     use dao_factory::ledger;
     use dao_factory::boost_registry;
     use dao_libs::table;
@@ -30,7 +30,6 @@ module dao_factory::foundry {
     // Constants
     const REWARD_SCALE: u128 = 1_000_000_000_000_000_000;
     const MAX_U64: u128 = 18_446_744_073_709_551_615;
-    const BPS_DENOMINATOR: u128 = 10000;
 
     // The Gauge Object State
     struct Gauge has key {
@@ -216,7 +215,7 @@ module dao_factory::foundry {
     fun refresh_working_balance(gauge: &mut Gauge, account: address, actual_balance: u128) {
         let old_working = get_working_balance(gauge, account);
         let boost_bps = get_stored_boost_bps(gauge, account);
-        let new_working = math128::mul_div(actual_balance, BPS_DENOMINATOR + (boost_bps as u128), BPS_DENOMINATOR);
+        let new_working = math::calculate_boosted_working_balance(actual_balance, boost_bps);
 
         gauge.working_supply = gauge.working_supply - old_working + new_working;
         if (new_working > 0) {

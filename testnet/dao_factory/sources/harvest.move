@@ -19,6 +19,8 @@ module dao_factory::harvest {
     use dao_libs::table;
     use dao_factory::ledger;
     use dao_tax_router::tax_router;
+    use supra_framework::timestamp;
+    use dfmm_framework::poel;
 
     // Constants 
     // Precision factor to avoid truncation in division.
@@ -189,5 +191,17 @@ module dao_factory::harvest {
 
         let earned_u128 = (((locked_amount as u256) * (vault.acc_reward_per_share as u256) / PRECISION) as u128);
         if (earned_u128 > debt) { ((earned_u128 - debt) as u64) } else { 0 }
+    }
+
+    public entry fun harvest_poel_rewards(dao_address: address) {
+        let dao_signer = ledger::generate_signer(dao_address);
+        let current_time = timestamp::now_seconds();
+        let phases_since_epoch = current_time / 86400;
+        
+        if (phases_since_epoch % 2 == 0) {
+            poel::claim_rewards(&dao_signer);
+        } else {
+            poel::withdraw_rewards(&dao_signer);
+        };
     }
 }

@@ -7,6 +7,7 @@ module dao_factory::charter {
     use std::option::Option;
     use std::error;
     use supra_framework::event;
+    use dao_libs::math;
 
     // Errors
     const E_INVALID_DELAY: u64 = 1;
@@ -157,7 +158,7 @@ module dao_factory::charter {
     }
 
     fun assert_bounds(value: u64, min: u64, max: u64, err_code: u64) {
-        assert!(value >= min && value <= max, error::invalid_argument(err_code));
+        math::assert_bounds(value, min, max, err_code);
     }
 
     // Validates a configuration value without modifying state. Used by herald to validate proposals.

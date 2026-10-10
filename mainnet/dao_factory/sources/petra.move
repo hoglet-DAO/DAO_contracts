@@ -277,7 +277,7 @@ module dao_factory::petra {
     // parameters outside safe limits.
     
     fun assert_bounds(value: u64, min: u64, max: u64, err_code: u64) {
-        assert!(value >= min && value <= max, error::invalid_argument(err_code));
+        math::assert_bounds(value, min, max, err_code);
     }
 
     public entry fun set_default_config(admin: &signer, config_key: u8, value: u64) acquires FactoryConfig {
