@@ -135,7 +135,7 @@ module dao_factory::petra {
     fun init_module(admin: &signer) {
         move_to(admin, FactoryConfig {
             creation_fee: 1_370_000_000, // 13.7 APT/SUPRA
-            fee_receiver: @HOGLET,
+            fee_receiver: @HOG,
             admin_address: @dao_genesis,
             pending_admin_address: @0x0,
             default_voting_delay: charter::min_delay_seconds(), // Using SSOT from charter

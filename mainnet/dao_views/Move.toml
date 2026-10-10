@@ -5,8 +5,8 @@ authors = []
 
 [addresses]
 
-HOGLET = "0x17aecc0a267c77a70f51db8070f504bce55d64de886e675b52bd9143729897d9"
-dao_views = "0xbd2dc0c56d36fae5c9e8a28074bc99ebb9956efbb92ba1b0475a133b567e0301"
+HOG = "0x3ec6be8be7d00c5e778a76ea9a3cf8650ccb7cb0e6fcce36653beed63198cc9f"
+dao_views = "0xc3d3e1cee546bfae35c03e0f6f21469d2161dc405315a5f55949ddae423ddcda"
 
 [dev-addresses]
 
@@ -18,9 +18,9 @@ subdir = "aptos-move/framework/supra-framework"
 [dependencies.hoglet_dao]
 git = "https://github.com/hoglet-DAO/DAO_contracts.git"
 rev = "main"
-subdir = "mainnet/dao_factory"
+subdir = "testnet/dao_factory"
 
 [dependencies.dao_libs]
 git = "https://github.com/hoglet-DAO/DAO_contracts.git"
 rev = "main"
-subdir = "mainnet/dao_libs"
+subdir = "testnet/dao_libs"

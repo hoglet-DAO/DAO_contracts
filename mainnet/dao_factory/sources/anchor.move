@@ -1,4 +1,5 @@
 module dao_factory::anchor {
+    friend dao_factory::seal;
     use std::signer;
     use std::error;
     use supra_framework::timestamp;
@@ -12,6 +13,7 @@ module dao_factory::anchor {
     use dao_factory::boost_registry;
     use dao_factory::jubilee;
     use dao_tokens::smart_token;
+    use dao_scripts::vault;
     use supra_framework::object;
     use supra_framework::coin;
     use supra_framework::supra_coin::SupraCoin;
@@ -84,7 +86,22 @@ module dao_factory::anchor {
     /// Resolves a script proposal (type 9) that has passed voting and timelock.
     /// Can only be called within a transaction whose script bytecode hash matches the proposal's execution_hash.
     /// Returns the DAO's Signer for transient execution within the calling script.
-    public fun resolve(dao_address: address, proposal_id: u64): signer {
+    ///
+    /// `public(friend)` ON PURPOSE: scripts must NOT call this directly, because
+    /// it does not verify the args commitment nor the vault allow-list. The ONLY
+    /// public entry point is `seal::resolve_with_args`, which checks both and
+    /// then delegates here. This closes the "call anchor::resolve directly to
+    /// bypass seal" attack (HOG-01).
+    public(friend) fun resolve(dao_address: address, proposal_id: u64): signer {
+        // Type 9 hands the DAO's signer to ARBITRARY code. A guardian (who can
+        // ONLY cancel, never execute) is required as a safety net: if a malicious
+        // script is ever approved, the guardian can still cancel it during the
+        // timelock. No guardian => no script execution.
+        assert!(
+            std::option::is_some(&charter::get_guardian(dao_address)),
+            error::invalid_state(E_NO_GUARDIAN_CONFIGURED)
+        );
+
         validate_and_mark_executed(dao_address, proposal_id);
 
         let proposal_type = ledger::get_proposal_type(dao_address, proposal_id);
@@ -200,6 +217,13 @@ module dao_factory::anchor {
                 boost_registry::remove_collection(&dao_signer, collection_addr);
             } else {
                 abort error::invalid_argument(E_INVALID_ACTION)
+            };
+        } else if (proposal_type == 10) { // Script Allow-list (type 10)
+            let (script_id, add) = ledger::get_proposal_action_script_allow(dao_address, proposal_id);
+            if (add) {
+                vault::add(&dao_signer, script_id);
+            } else {
+                vault::remove(&dao_signer, script_id);
             };
         } else {
             abort error::invalid_argument(E_INVALID_PROPOSAL_TYPE)

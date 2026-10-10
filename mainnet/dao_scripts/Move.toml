@@ -1,14 +1,11 @@
 [package]
-name = "dao_tokens"
+name = "dao_scripts"
 version = "1.0.0"
-authors = []
 
 [addresses]
 
 HOG = "0x3ec6be8be7d00c5e778a76ea9a3cf8650ccb7cb0e6fcce36653beed63198cc9f"
-dao_tokens = "0x083387c3fec5279835cd55d009dba0265fc9c30fd727b47c0c5ff93da18719a0"
-
-[dev-addresses]
+dao_scripts = "0x46ac76267510b8aca224cbf7d046068c04dfdfd46fbbd39212ec0a3cdf4d3cc5"
 
 [dependencies.SupraFramework]
 git = "https://github.com/Entropy-Foundation/aptos-core.git"

@@ -19,6 +19,7 @@ module dao_factory::herald {
     use supra_framework::object;
     use std::error;
     use aptos_std::smart_table::{Self, SmartTable};
+    use aptos_std::aptos_hash;
 
     
     use dao_libs::pilgrim;
@@ -31,6 +32,9 @@ module dao_factory::herald {
     use dao_factory::jubilee;
     use dao_factory::boost_registry;
 
+    use dao_scripts::library;
+    use dao_scripts::vault;
+
     // Errors
     const E_BELOW_THRESHOLD: u64 = 1;
     const E_LOCK_EXPIRED: u64    = 2;
@@ -42,6 +46,11 @@ module dao_factory::herald {
     const E_INVALID_ACTION_TYPE: u64 = 8;
     const E_INVALID_BOOST: u64 = 10;
     const E_INVALID_HASH_LENGTH: u64 = 11;
+    const E_NO_GUARDIAN: u64 = 12;
+    const E_SCRIPT_NOT_ALLOWED: u64 = 13;
+    const E_SCRIPT_NOT_FOUND: u64 = 14;
+    const E_STATIC_SCRIPT_HAS_ARGS: u64 = 15;
+    const E_PARAMETERIZED_SCRIPT_EMPTY_ARGS: u64 = 16;
 
     // Structs 
     struct HeraldState has key {
@@ -79,6 +88,9 @@ module dao_factory::herald {
         /// Hash of the compiled Move script bytecode (sha3-256) for type 9 proposals.
         /// Empty for standard proposal types (1-8).
         execution_hash: vector<u8>,
+        /// keccak256 of the script args (32 bytes) for type 9 proposals; empty for
+        /// every other type. Lets indexers commit to the args without a view call.
+        args_commitment: vector<u8>,
     }
 
     // Functions
@@ -214,7 +226,7 @@ module dao_factory::herald {
 
         emit_proposal_event(
             dao_address, proposal_id, proposer_addr, title, 1, start_time, end_time,
-            @0x0, asset_address, recipient, amount, 0, 0, description_hash, vector::empty()
+            @0x0, asset_address, recipient, amount, 0, 0, description_hash, vector::empty(), vector::empty()
         );
     }
 
@@ -257,7 +269,7 @@ module dao_factory::herald {
 
         emit_proposal_event(
             dao_address, proposal_id, proposer_addr, title, 1, start_time, end_time,
-            @0x0, asset_address, recipient, amount, 0, 0, description_hash, vector::empty()
+            @0x0, asset_address, recipient, amount, 0, 0, description_hash, vector::empty(), vector::empty()
         );
     }
 
@@ -290,7 +302,7 @@ module dao_factory::herald {
 
         emit_proposal_event(
             dao_address, proposal_id, proposer_addr, title, 5, start_time, end_time,
-            nft_address, @0x0, recipient, 1, 0, 0, description_hash, vector::empty()
+            nft_address, @0x0, recipient, 1, 0, 0, description_hash, vector::empty(), vector::empty()
         );
     }
 
@@ -332,7 +344,7 @@ module dao_factory::herald {
 
         emit_proposal_event(
             dao_address, proposal_id, proposer_addr, title, 2, start_time, end_time,
-            @0x0, @0x0, @0x0, 0, (config_key as u64), config_value, description_hash, vector::empty()
+            @0x0, @0x0, @0x0, 0, (config_key as u64), config_value, description_hash, vector::empty(), vector::empty()
         );
     }
 
@@ -362,7 +374,7 @@ module dao_factory::herald {
 
         emit_proposal_event(
             dao_address, proposal_id, proposer_addr, title, 4, start_time, end_time,
-            new_guardian, @0x0, @0x0, 0, 0, 0, description_hash, vector::empty()
+            new_guardian, @0x0, @0x0, 0, 0, 0, description_hash, vector::empty(), vector::empty()
         );
     }
 
@@ -397,7 +409,7 @@ module dao_factory::herald {
 
         emit_proposal_event(
             dao_address, proposal_id, proposer_addr, title, 3, start_time, end_time,
-            target_address, @0x0, @0x0, 0, (action_type as u64), gauge_id, description_hash, vector::empty()
+            target_address, @0x0, @0x0, 0, (action_type as u64), gauge_id, description_hash, vector::empty(), vector::empty()
         );
     }
 
@@ -439,7 +451,7 @@ module dao_factory::herald {
 
         emit_proposal_event(
             dao_address, proposal_id, proposer_addr, title, 7, start_time, end_time,
-            target_address, @0x0, @0x0, 0, (setting_type as u64), if (bool_value) 1 else 0, description_hash, vector::empty()
+            target_address, @0x0, @0x0, 0, (setting_type as u64), if (bool_value) 1 else 0, description_hash, vector::empty(), vector::empty()
         );
     }
 
@@ -501,14 +513,15 @@ module dao_factory::herald {
 
         emit_proposal_event(
             dao_address, proposal_id, proposer_addr, title, 8, start_time, end_time,
-            collection_addr, @0x0, @0x0, 0, (action_type as u64), boost_bps, description_hash, vector::empty()
+            collection_addr, @0x0, @0x0, 0, (action_type as u64), boost_bps, description_hash, vector::empty(), vector::empty()
         );
     }
 
     /// Creates a proposal to execute an arbitrary Move Script (type 9).
     ///
     /// # Arguments
-    /// - `execution_hash`: sha3-256 hash (must be exactly 32 bytes) of the compiled Move script.
+    /// - `script_id`: ID of the script in dao_scripts::library (must be approved in the DAO's vault).
+    /// - `args_commitment`: keccak256 hash of the script arguments (or keccak256(empty) for parameterless).
     ///
     /// Uses SUPER QUORUM to prevent governance capture when executing arbitrary scripts with the DAO signer.
     public entry fun propose_script(
@@ -517,9 +530,33 @@ module dao_factory::herald {
         dao_address: address,
         title: String,
         description_hash: vector<u8>,
-        execution_hash: vector<u8>,
+        script_id: u64,
+        args_commitment: vector<u8>,
     ) acquires HeraldState {
+        // Type 9 executes ARBITRARY code with the DAO's signer. Require a
+        // guardian (a cancel-only safety net) before it can even be proposed.
+        assert!(
+            std::option::is_some(&charter::get_guardian(dao_address)),
+            error::invalid_state(E_NO_GUARDIAN)
+        );
+        // Gate (create): the script must be in the DAO's allow-list.
+        assert!(
+            vault::is_approved(dao_address, script_id),
+            error::invalid_state(E_SCRIPT_NOT_ALLOWED)
+        );
+        // The execution hash is the library's immutable hash for this id; the
+        // args commitment is keccak256(args) (32 bytes).
+        let execution_hash = library::get_execution_hash(script_id);
         assert!(vector::length(&execution_hash) == 32, error::invalid_argument(E_INVALID_HASH_LENGTH));
+        assert!(vector::length(&args_commitment) == 32, error::invalid_argument(E_INVALID_HASH_LENGTH));
+
+        // Enforce static vs dynamic consistency against library registry
+        let empty_commitment = aptos_hash::keccak256(vector::empty<u8>());
+        if (library::has_args(script_id)) {
+            assert!(args_commitment != empty_commitment, error::invalid_argument(E_PARAMETERIZED_SCRIPT_EMPTY_ARGS));
+        } else {
+            assert!(args_commitment == empty_commitment, error::invalid_argument(E_STATIC_SCRIPT_HAS_ARGS));
+        };
 
         let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required) = 
             validate_and_prepare_proposal(proposer, legacy_addr, dao_address, true); // Script proposals require super quorum
@@ -534,12 +571,71 @@ module dao_factory::herald {
             end_time,
             quorum_required,
             execution_hash,
+            args_commitment,
+            script_id,
         );
         ledger::add_proposal(dao_address, proposal_id, new_proposal);
 
         emit_proposal_event(
             dao_address, proposal_id, proposer_addr, title, 9, start_time, end_time,
-            @0x0, @0x0, @0x0, 0, 0, 0, description_hash, execution_hash
+            @0x0, @0x0, @0x0, script_id, 0, 0, description_hash, execution_hash, args_commitment
+        );
+    }
+
+    /// Creates a proposal to execute a static (parameterless) Move script (type 9).
+    /// Auto-fills args_commitment with keccak256(empty).
+    public entry fun propose_static_script(
+        proposer: &signer,
+        legacy_addr: address,
+        dao_address: address,
+        title: String,
+        description_hash: vector<u8>,
+        script_id: u64,
+    ) acquires HeraldState {
+        propose_script(
+            proposer,
+            legacy_addr,
+            dao_address,
+            title,
+            description_hash,
+            script_id,
+            aptos_hash::keccak256(vector::empty<u8>()),
+        );
+    }
+
+    /// Type 10: add/remove a script id from the DAO's allow-list (vault).
+    /// Super quorum: the allow-list is what enables script execution.
+    public entry fun propose_script_allow(
+        proposer: &signer,
+        legacy_addr: address,
+        dao_address: address,
+        title: String,
+        description_hash: vector<u8>,
+        script_id: u64,
+        add: bool,
+    ) acquires HeraldState {
+        assert!(library::script_exists(script_id), error::invalid_argument(E_SCRIPT_NOT_FOUND));
+
+        let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required) =
+            validate_and_prepare_proposal(proposer, legacy_addr, dao_address, true); // super quorum
+
+        let new_proposal = ledger::new_script_allow_proposal(
+            proposal_id,
+            proposer_addr,
+            ve_token_addr,
+            title,
+            description_hash,
+            start_time,
+            end_time,
+            quorum_required,
+            script_id,
+            add,
+        );
+        ledger::add_proposal(dao_address, proposal_id, new_proposal);
+
+        emit_proposal_event(
+            dao_address, proposal_id, proposer_addr, title, 10, start_time, end_time,
+            @0x0, @0x0, @0x0, script_id, 0, (if (add) 1 else 0), description_hash, vector::empty(), vector::empty()
         );
     }
 
@@ -548,7 +644,7 @@ module dao_factory::herald {
     fun emit_proposal_event(
         dao_address: address, proposal_id: u64, proposer: address, title: String, proposal_type: u8, start_time: u64, end_time: u64,
         action_target_address: address, action_asset_address: address, action_recipient: address, action_amount: u64, action_config_key: u64, action_config_value: u64,
-        description_hash: vector<u8>, execution_hash: vector<u8>
+        description_hash: vector<u8>, execution_hash: vector<u8>, args_commitment: vector<u8>
     ) {
         event::emit(ProposalCreated {
             dao_address,
@@ -566,6 +662,7 @@ module dao_factory::herald {
             action_config_value,
             description_hash,
             execution_hash,
+            args_commitment,
         });
     }
 

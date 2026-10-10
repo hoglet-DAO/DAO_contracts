@@ -299,7 +299,8 @@ module dao_factory::ledger {
     }
 
     // Manual proposal constructor for Script Execution action (type 9)
-    // The 32-byte script execution hash is stored in the upgrade_metadata field.
+    // `upgrade_metadata` packs `execution_hash (32) || args_commitment (32)`.
+    // `script_id` is stored in action_amount (vault gate + metadata lookup).
     public(friend) fun new_script_proposal(
         id: u64,
         proposer: address,
@@ -310,10 +311,35 @@ module dao_factory::ledger {
         end_time: u64,
         quorum_required: u64,
         execution_hash: vector<u8>,
+        args_commitment: vector<u8>,
+        script_id: u64,
+    ): Proposal {
+        let packed = execution_hash;
+        vector::append(&mut packed, args_commitment);
+        new_proposal_base(
+            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time,
+            quorum_required, 9, packed, @0x0, script_id, 0, 0, @0x0
+        )
+    }
+
+    // Manual proposal constructor for Script Allow-list action (type 10)
+    // `script_id` is stored in action_amount; action_config_value = 1 (add) / 0 (remove).
+    public(friend) fun new_script_allow_proposal(
+        id: u64,
+        proposer: address,
+        proposer_ve_token: address,
+        title: String,
+        description_hash: vector<u8>,
+        start_time: u64,
+        end_time: u64,
+        quorum_required: u64,
+        script_id: u64,
+        add: bool,
     ): Proposal {
         new_proposal_base(
             id, proposer, proposer_ve_token, title, description_hash, start_time, end_time,
-            quorum_required, 9, execution_hash, @0x0, 0, 0, 0, @0x0
+            quorum_required, 10, vector::empty(), @0x0, script_id, 0,
+            (if (add) 1 else 0), @0x0
         )
     }
 
@@ -424,7 +450,41 @@ module dao_factory::ledger {
     public fun get_proposal_execution_hash(dao_address: address, proposal_id: u64): vector<u8> acquires DaoState {
         let state = borrow_global<DaoState>(dao_address);
         let proposal = get_proposal_safe(state, proposal_id);
-        *&proposal.upgrade_metadata
+        let meta = *&proposal.upgrade_metadata;
+        // Type 9 packs `execution_hash (32) || args_commitment (32)`; resolve()
+        // compares only the first 32 bytes against get_script_hash().
+        if (vector::length(&meta) >= 32) {
+            vector::slice(&meta, 0, 32)
+        } else {
+            meta
+        }
+    }
+
+    #[view]
+    public fun get_proposal_args_commitment(dao_address: address, proposal_id: u64): vector<u8> acquires DaoState {
+        let state = borrow_global<DaoState>(dao_address);
+        let proposal = get_proposal_safe(state, proposal_id);
+        let meta = *&proposal.upgrade_metadata;
+        if (vector::length(&meta) >= 64) {
+            vector::slice(&meta, 32, 64)
+        } else {
+            vector::empty()
+        }
+    }
+
+    #[view]
+    public fun get_proposal_script_id(dao_address: address, proposal_id: u64): u64 acquires DaoState {
+        let state = borrow_global<DaoState>(dao_address);
+        let proposal = get_proposal_safe(state, proposal_id);
+        proposal.action_amount
+    }
+
+    // Formal getter for a type-10 (Script Allow-list) action: (script_id, add).
+    #[view]
+    public fun get_proposal_action_script_allow(dao_address: address, proposal_id: u64): (u64, bool) acquires DaoState {
+        let state = borrow_global<DaoState>(dao_address);
+        let proposal = get_proposal_safe(state, proposal_id);
+        (proposal.action_amount, proposal.action_config_value == 1)
     }
 
     // Dynamic Quorum (Rolling Average) 
