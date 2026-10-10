@@ -20,12 +20,12 @@ subdir = "aptos-move/framework/aptos-token-objects"
 [dependencies.hoglet_dao]
 git = "https://github.com/hoglet-DAO/DAO_contracts.git"
 rev = "main"
-subdir = "testnet/dao_factory"
+subdir = "mainnet/dao_factory"
 
 [dependencies.hoglet_core]
 git = "https://github.com/hoglet-DAO/hoglet_launcher.git"
 rev = "main"
-subdir = "testnet/hoglet_core"
+subdir = "mainnet/hoglet_core"
 
 [dependencies.nft_wrap]
 git = "https://github.com/hoglet-DAO/nft_wrapper.git"
