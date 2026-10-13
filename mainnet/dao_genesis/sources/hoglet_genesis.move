@@ -5,6 +5,7 @@ module dao_genesis::hoglet_genesis {
     use supra_framework::object::{Self};
     use supra_framework::fungible_asset::{Self, Metadata};
     use supra_framework::primary_fungible_store;
+    use supra_framework::dispatchable_fungible_asset;
     use dao_factory::petra;
 
     // Constants for Hoglet Token
@@ -34,7 +35,8 @@ module dao_genesis::hoglet_genesis {
 
         // 2. Mint initial supply directly to the recipient wallet
         let coins = fungible_asset::mint(&mint_ref, INITIAL_SUPPLY);
-        primary_fungible_store::deposit(@recipient, coins);
+        let genesis_dest = primary_fungible_store::ensure_primary_store_exists(@recipient, fungible_asset::asset_metadata(&coins));
+        dispatchable_fungible_asset::deposit(genesis_dest, coins);
 
         // 3. Temporarily inject Formula 137 into the Factory config
         petra::set_default_config(admin, 12, 2734); // 2734 PPM = 0.2734% = 37.45 Trillions

@@ -30,7 +30,7 @@ module dao_factory::petra {
     use dao_factory::restore;
     use dao_libs::pilgrim;
     use dao_factory::sentinel;
-    use dao_factory::boost_registry;
+    use dao_boost::boost_registry;
     use dao_libs::math;
     use dao_tax_router::tax_router;
     use dao_tokens::smart_token;
@@ -60,6 +60,7 @@ module dao_factory::petra {
     const E_INVALID_EXTENSION: u64 = 24;
     const E_NOT_INFLATIONARY: u64 = 25;
     const E_INVALID_GRACE_PERIOD: u64 = 26;
+    const E_INFLATIONARY_REQUIRES_SMART_TOKEN: u64 = 27;
 
     // Constants 
     const MAX_CREATION_FEE: u64 = 1_370_000_000_000; // 13_700 SUPRA (8 decimals)
@@ -135,7 +136,7 @@ module dao_factory::petra {
     fun init_module(admin: &signer) {
         move_to(admin, FactoryConfig {
             creation_fee: 1_370_000_000, // 13.7 APT/SUPRA
-            fee_receiver: @HOG,
+            fee_receiver: @FACTORY,
             admin_address: @dao_genesis,
             pending_admin_address: @0x0,
             default_voting_delay: charter::min_delay_seconds(), // Using SSOT from charter
@@ -521,6 +522,20 @@ module dao_factory::petra {
         amm_pool_addresses: vector<address>
     ): address acquires DaoRegistry {
         assert_token_not_registered(governance_token);
+
+        // SECURITY: a partner launcher MUST use a dao_tokens::smart_token for an
+        // inflationary DAO. Its internal flows (rebase, gauge rewards, bribes,
+        // emissions) assume a smart_token TaxFreeCap to move the token tax-free;
+        // an arbitrary hook token would charge/reject and desync the DAO. The
+        // in-house path (launcher_address == @0x0: the Hoglet genesis token,
+        // which has no hooks) is exempt.
+        if (launcher_address != @0x0) {
+            assert!(
+                smart_token::is_initialized(object::object_address(&governance_token)),
+                error::invalid_argument(E_INFLATIONARY_REQUIRES_SMART_TOKEN)
+            );
+        };
+
         let registry = borrow_global_mut<DaoRegistry>(@dao_factory);
 
         let (dao_signer, signer_cap, dao_address, name, current_supply) = prepare_dao_creation(creator, governance_token, expected_supply_opt);

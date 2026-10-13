@@ -4,8 +4,8 @@ version = "1.0.0"
 
 [addresses]
 
-HOG = "0x3ec6be8be7d00c5e778a76ea9a3cf8650ccb7cb0e6fcce36653beed63198cc9f"
-dao_tax_router = "0x7d6f97a1840d61eb9babd470afb4bd07d2676ffc26a06f59b5c663fd51ae6527"
+FACTORY = "0x6e3e09ab7fd0145d7befc0c68d6944ddc1a90fd45b8a6d28c76d8c48bed676b0"
+dao_tax_router = "0xe23d764b9420468f0f5b10cffcdb04c8742bd3c036e17b176f57d83237816bb6"
 
 [dependencies.SupraFramework]
 git = "https://github.com/Entropy-Foundation/aptos-core.git"

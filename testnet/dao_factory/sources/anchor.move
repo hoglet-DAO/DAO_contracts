@@ -10,7 +10,7 @@ module dao_factory::anchor {
     use dao_factory::legacy;
     use dao_factory::sentinel;
     use dao_factory::foundry;
-    use dao_factory::boost_registry;
+    use dao_boost::boost_registry;
     use dao_factory::jubilee;
     use dao_tokens::smart_token;
     use dao_scripts::vault;
@@ -19,6 +19,7 @@ module dao_factory::anchor {
     use supra_framework::supra_coin::SupraCoin;
     use supra_framework::fungible_asset::Metadata;
     use supra_framework::primary_fungible_store;
+    use supra_framework::dispatchable_fungible_asset;
     use supra_framework::transaction_context;
 
     const E_PROPOSAL_NOT_SUCCEEDED: u64 = 1;
@@ -136,7 +137,11 @@ module dao_factory::anchor {
             } else {
                 // Otherwise, treat it as a FungibleAsset
                 let metadata = object::address_to_object<Metadata>(asset_address);
-                primary_fungible_store::transfer(&dao_signer, metadata, recipient, amount);
+                // Dispatch-aware: works for dispatchable FAs (foreign launch tokens) AND plain FAs.
+                let from_store = primary_fungible_store::ensure_primary_store_exists(signer::address_of(&dao_signer), metadata);
+                let fa = dispatchable_fungible_asset::withdraw(&dao_signer, from_store, amount);
+                let to_store = primary_fungible_store::ensure_primary_store_exists(recipient, metadata);
+                dispatchable_fungible_asset::deposit(to_store, fa);
             };
         } else if (proposal_type == 2) { // Config Change
             let (config_key, config_value) = ledger::get_proposal_action_config(dao_address, proposal_id);

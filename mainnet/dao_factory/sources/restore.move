@@ -12,6 +12,7 @@ module dao_factory::restore {
     use std::vector;
     use supra_framework::fungible_asset::{Self, Metadata};
     use supra_framework::primary_fungible_store;
+    use supra_framework::dispatchable_fungible_asset;
 
     use supra_framework::object::{Self, Object, ExtendRef};
     use supra_framework::event;
@@ -206,10 +207,11 @@ module dao_factory::restore {
         let fa = if (use_cap) {
             tax_router::withdraw_tax_free(dao_address, &ledger::generate_signer(dao_address), user_store, amount)
         } else {
-            fungible_asset::withdraw(depositor, user_store, amount)
+            dispatchable_fungible_asset::withdraw(depositor, user_store, amount)
         };
 
-        primary_fungible_store::deposit(registry.vault_address, fa);
+        let vault_dest = primary_fungible_store::ensure_primary_store_exists(registry.vault_address, fungible_asset::asset_metadata(&fa));
+        dispatchable_fungible_asset::deposit(vault_dest, fa);
 
         let key = BribeKey { pilgrim, gauge_id, token_addr };
         let current_total = table::u64_or_zero(&registry.total_bribes, key);
@@ -283,12 +285,12 @@ module dao_factory::restore {
             let fa = if (use_cap) {
                 tax_router::withdraw_tax_free(dao_address, &ledger::generate_signer(dao_address), vault_store, share)
             } else {
-                fungible_asset::withdraw(&vault_signer, vault_store, share)
+                dispatchable_fungible_asset::withdraw(&vault_signer, vault_store, share)
             };
             if (use_cap) {
                 tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), user_store, fa);
             } else {
-                fungible_asset::deposit(user_store, fa);
+                dispatchable_fungible_asset::deposit(user_store, fa);
             };
 
             event::emit(BribeClaimed {

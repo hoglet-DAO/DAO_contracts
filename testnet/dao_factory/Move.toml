@@ -5,9 +5,9 @@ authors = []
 
 [addresses]
 
-HOG = "0x3ec6be8be7d00c5e778a76ea9a3cf8650ccb7cb0e6fcce36653beed63198cc9f"
-dao_factory = "0x94308f41c5a3dbdcc04fa0cc24b1e8dd2b72723142d03292310104f731a83606"
-dao_genesis = "0x643e0533832d6048baac063fd0622f92d26fa0fc6751cc22ed46bc857a307c9f"
+FACTORY = "0x6e3e09ab7fd0145d7befc0c68d6944ddc1a90fd45b8a6d28c76d8c48bed676b0"
+dao_factory = "0xbd6b6de2bcdce3fb518ebe10b6b4f67278884f3cf039ff9ec7db321a254d4abc"
+dao_genesis = "0x41cb72182c88b20e3e2c86e26c6775f86cd30b981646e55325527c70658e8727"
 
 [dev-addresses]
 
@@ -45,5 +45,10 @@ subdir = "testnet/dao_tokens"
 git = "https://github.com/hoglet-DAO/DAO_contracts.git"
 rev = "main"
 subdir = "testnet/dao_scripts"
+
+[dependencies.dao_boost]
+git = "https://github.com/hoglet-DAO/DAO_contracts.git"
+rev = "main"
+subdir = "testnet/dao_boost"
 
 [dev-dependencies]

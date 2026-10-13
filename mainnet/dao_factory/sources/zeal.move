@@ -11,6 +11,7 @@ module dao_factory::zeal {
     use std::signer;
     use supra_framework::fungible_asset::{Self, FungibleAsset, Metadata};
     use supra_framework::primary_fungible_store;
+    use supra_framework::dispatchable_fungible_asset;
     use supra_framework::object::{Self, ExtendRef};
 
     use supra_framework::event;
@@ -357,14 +358,16 @@ module dao_factory::zeal {
 
         // If no one voted, everything goes to the default destination immediately
         if (total_votes == 0) {
-            primary_fungible_store::deposit(registry.default_destination, fa);
+            let dest = primary_fungible_store::ensure_primary_store_exists(registry.default_destination, fungible_asset::asset_metadata(&fa));
+            dispatchable_fungible_asset::deposit(dest, fa);
             event::emit(EmissionsDistributed { dao_address, pilgrim: target_epoch, total_amount: total_emissions });
             return
         };
 
         // Push to Pull Refactor: Store the FA in the vault and record the total emissions for this epoch
         smart_table::upsert(&mut registry.epoch_total_emissions, target_epoch, total_emissions);
-        primary_fungible_store::deposit(registry.vault_address, fa);
+        let vault_dest = primary_fungible_store::ensure_primary_store_exists(registry.vault_address, fungible_asset::asset_metadata(&fa));
+        dispatchable_fungible_asset::deposit(vault_dest, fa);
 
         event::emit(EmissionsDistributed { dao_address, pilgrim: target_epoch, total_amount: total_emissions });
     }
@@ -412,7 +415,8 @@ module dao_factory::zeal {
             let share = (((total_emissions as u128) * votes / total_votes) as u64);
             if (share > 0) {
                 let vault_signer = object::generate_signer_for_extending(&registry.vault_extend_ref);
-                let share_fa = primary_fungible_store::withdraw(&vault_signer, token_metadata, share);
+                let vault_store = primary_fungible_store::ensure_primary_store_exists(signer::address_of(&vault_signer), token_metadata);
+                let share_fa = dispatchable_fungible_asset::withdraw(&vault_signer, vault_store, share);
                 let gauge = smart_table::borrow(&registry.gauges, gauge_id);
                 
                 if (gauge.is_active) {
@@ -421,7 +425,8 @@ module dao_factory::zeal {
                 } else {
                     // SECURITY FIX (M7): "Kill gauge" real.
                     // Redirige los fondos de un gauge muerto hacia la tesoreria.
-                    primary_fungible_store::deposit(registry.default_destination, share_fa);
+                    let dest = primary_fungible_store::ensure_primary_store_exists(registry.default_destination, token_metadata);
+                    dispatchable_fungible_asset::deposit(dest, share_fa);
                 };
                 
                 event::emit(GaugeEmissionClaimed { 

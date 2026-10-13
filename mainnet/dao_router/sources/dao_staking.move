@@ -13,8 +13,9 @@ module dao_router::dao_staking {
     use std::option;
     use std::signer;
     use supra_framework::coin;
-    use supra_framework::fungible_asset::Metadata;
+    use supra_framework::fungible_asset::{Self, Metadata};
     use supra_framework::primary_fungible_store;
+    use supra_framework::dispatchable_fungible_asset;
     use supra_framework::object::{Self, Object};
     use dao_factory::petra;
     use dao_factory::legacy;
@@ -79,7 +80,8 @@ module dao_router::dao_staking {
 
         // 3. Park it in the caller's primary FA store: `create_lock` withdraws
         //    from `primary_fungible_store::primary_store(user, token_metadata)`.
-        primary_fungible_store::deposit(user_addr, fa);
+        let dest = primary_fungible_store::ensure_primary_store_exists(user_addr, fungible_asset::asset_metadata(&fa));
+        dispatchable_fungible_asset::deposit(dest, fa);
 
         // 4. Lock.
         let _nft_object = legacy::create_lock(user, dao_address, amount, lock_epochs);

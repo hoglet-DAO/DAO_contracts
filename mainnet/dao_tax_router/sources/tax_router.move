@@ -5,6 +5,7 @@ module dao_tax_router::tax_router {
     use dao_tokens::smart_token;
     use supra_framework::object;
     use supra_framework::fungible_asset::{Self, FungibleStore, FungibleAsset};
+    use supra_framework::dispatchable_fungible_asset;
 
     const E_NOT_STORE_OWNER: u64 = 1;
     const E_NOT_WHITELISTED_ROUTER: u64 = 2;
@@ -177,7 +178,7 @@ module dao_tax_router::tax_router {
             let router_res = borrow_global<TaxFreeRouter>(dao_address);
             smart_token::deposit_tax_free(&router_res.cap, store, fa);
         } else {
-            fungible_asset::deposit(store, fa);
+            dispatchable_fungible_asset::deposit(store, fa);
         };
     }
 }

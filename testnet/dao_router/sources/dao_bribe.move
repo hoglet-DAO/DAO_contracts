@@ -6,6 +6,7 @@ module dao_router::dao_bribe {
     use supra_framework::fungible_asset;
     use supra_framework::object;
     use supra_framework::primary_fungible_store;
+    use supra_framework::dispatchable_fungible_asset;
     use dao_factory::restore;
 
     public entry fun deposit_bribe_coin<CoinType>(
@@ -20,7 +21,8 @@ module dao_router::dao_bribe {
         let fa = coin::coin_to_fungible_asset(coin);
         let token_metadata = fungible_asset::asset_metadata(&fa);
         let token_addr = object::object_address(&token_metadata);
-        primary_fungible_store::deposit(depositor_addr, fa);
+        let dest = primary_fungible_store::ensure_primary_store_exists(depositor_addr, token_metadata);
+        dispatchable_fungible_asset::deposit(dest, fa);
         restore::deposit_bribe(depositor, dao_address, pilgrim, gauge_id, token_addr, amount);
     }
 }

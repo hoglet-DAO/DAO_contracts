@@ -246,7 +246,8 @@ module dao_factory::legacy {
             // deposited into rebase_store would be stranded forever (the
             // accumulator can never distribute them). Redirect them to the
             // DAO treasury instead, where governance can recover them.
-            primary_fungible_store::deposit(dao_address, rebase_fa);
+            let dest_store = primary_fungible_store::ensure_primary_store_exists(dao_address, fungible_asset::asset_metadata(&rebase_fa));
+            dispatchable_fungible_asset::deposit(dest_store, rebase_fa);
         };
     }
 
@@ -560,7 +561,7 @@ module dao_factory::legacy {
         let fa = if (tax_router::has_tax_free_router(dao_address)) {
             tax_router::withdraw_tax_free(dao_address, &ledger::generate_signer(dao_address), store, locked_amount)
         } else {
-            fungible_asset::withdraw(&obj_signer, store, locked_amount)
+            dispatchable_fungible_asset::withdraw(&obj_signer, store, locked_amount)
         };
 
         fungible_asset::remove_store(&delete_ref);
@@ -943,7 +944,7 @@ module dao_factory::legacy {
         let fa = if (tax_router::has_tax_free_router(dao_address)) {
             tax_router::withdraw_tax_free(dao_address, &ledger::generate_signer(dao_address), from_store, amount)
         } else {
-            fungible_asset::withdraw(owner, from_store, amount)
+            dispatchable_fungible_asset::withdraw(owner, from_store, amount)
         };
         tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), to_store, fa);
     }

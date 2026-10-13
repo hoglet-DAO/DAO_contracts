@@ -8,6 +8,7 @@ module dao_factory::foundry {
     use supra_framework::object::{Self, Object, ExtendRef};
     use supra_framework::fungible_asset::{Self, Metadata, FungibleAsset};
     use supra_framework::primary_fungible_store;
+    use supra_framework::dispatchable_fungible_asset;
     use aptos_std::smart_table::{Self, SmartTable};
     use aptos_std::math128;
     use supra_framework::timestamp;
@@ -18,7 +19,7 @@ module dao_factory::foundry {
     use dao_libs::pilgrim;
     use dao_libs::math;
     use dao_factory::ledger;
-    use dao_factory::boost_registry;
+    use dao_boost::boost_registry;
     use dao_libs::table;
     use dao_factory::legacy;
     use dao_tax_router::tax_router;
@@ -284,14 +285,24 @@ module dao_factory::foundry {
 
         resync_and_settle(gauge_addr, gauge, user_addr);
 
-        let fa = primary_fungible_store::withdraw(user, gauge.staking_token, amount);
-        primary_fungible_store::deposit(gauge_addr, fa);
+        // Move the staking token via the UNIVERSAL dispatch path - works for
+        // dispatchable tokens (e.g. launch tokens from other protocols) AND plain
+        // FAs. Credit the ACTUAL amount that landed in the gauge's store (a token's
+        // dispatch hook may skim a fee), so the gauge never credits more than it holds.
+        let staking_token = gauge.staking_token;
+        let user_store = primary_fungible_store::ensure_primary_store_exists(user_addr, staking_token);
+        let fa = dispatchable_fungible_asset::withdraw(user, user_store, amount);
 
-        let new_balance = get_actual_balance(gauge, user_addr) + (amount as u128);
-        let new_supply = gauge.total_supply + (amount as u128);
+        let gauge_store = primary_fungible_store::ensure_primary_store_exists(gauge_addr, staking_token);
+        let before = primary_fungible_store::balance(gauge_addr, staking_token);
+        dispatchable_fungible_asset::deposit(gauge_store, fa);
+        let credited = ((primary_fungible_store::balance(gauge_addr, staking_token) - before) as u128);
+
+        let new_balance = get_actual_balance(gauge, user_addr) + credited;
+        let new_supply = gauge.total_supply + credited;
         update_balance_and_supply(gauge, user_addr, new_balance, new_supply);
 
-        event::emit(Staked { gauge_address: gauge_addr, user: user_addr, amount });
+        event::emit(Staked { gauge_address: gauge_addr, user: user_addr, amount: (credited as u64) });
     }
 
     public entry fun withdraw(user: &signer, gauge_addr: address, amount: u64) acquires Gauge {
@@ -434,7 +445,8 @@ module dao_factory::foundry {
         gauge.last_update_time = current_time;
         gauge.period_finish = current_time + pilgrim::duration();
 
-        primary_fungible_store::deposit(gauge_addr, fa);
+        let gauge_dest = primary_fungible_store::ensure_primary_store_exists(gauge_addr, fungible_asset::asset_metadata(&fa));
+        dispatchable_fungible_asset::deposit(gauge_dest, fa);
 
         event::emit(RewardAdded { gauge_address: gauge_addr, amount: (amount as u64) });
     }
@@ -549,13 +561,26 @@ module dao_factory::foundry {
 
     fun withdraw_fa(gauge: &Gauge, token: Object<Metadata>, amount: u64, to: address) {
         let gauge_signer = object::generate_signer_for_extending(&gauge.extend_ref);
-        let fa = primary_fungible_store::withdraw(&gauge_signer, token, amount);
-        primary_fungible_store::deposit(to, fa);
+        let gauge_addr = signer::address_of(&gauge_signer);
+        // Universal dispatch path: works for dispatchable tokens AND plain FAs.
+        let gauge_store = primary_fungible_store::ensure_primary_store_exists(gauge_addr, token);
+        let fa = dispatchable_fungible_asset::withdraw(&gauge_signer, gauge_store, amount);
+        let to_store = primary_fungible_store::ensure_primary_store_exists(to, token);
+        dispatchable_fungible_asset::deposit(to_store, fa);
     }
 
     fun withdraw_reward_fa(gauge: &Gauge, amount: u64, to: address) {
         let gauge_signer = object::generate_signer_for_extending(&gauge.extend_ref);
-        let fa = primary_fungible_store::withdraw(&gauge_signer, gauge.dao_token, amount);
+        let gauge_addr = signer::address_of(&gauge_signer);
+        let gauge_store = primary_fungible_store::ensure_primary_store_exists(gauge_addr, gauge.dao_token);
+        // The reward IS the DAO's own token: route it through its TaxFreeRouter
+        // (cap) when present; otherwise the universal dispatch path, so a
+        // dispatchable DAO token never hits the raw withdraw.
+        let fa = if (tax_router::has_tax_free_router(gauge.dao_address)) {
+            tax_router::withdraw_tax_free(gauge.dao_address, &ledger::generate_signer(gauge.dao_address), gauge_store, amount)
+        } else {
+            dispatchable_fungible_asset::withdraw(&gauge_signer, gauge_store, amount)
+        };
         // Deposit to user (bypassing buy tax)
         let dest_store = primary_fungible_store::ensure_primary_store_exists(to, gauge.dao_token);
         tax_router::deposit_tax_free(gauge.dao_address, &ledger::generate_signer(gauge.dao_address), dest_store, fa);

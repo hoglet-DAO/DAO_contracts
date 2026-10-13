@@ -5,8 +5,8 @@ authors = []
 
 [addresses]
 
-HOG = "0x3ec6be8be7d00c5e778a76ea9a3cf8650ccb7cb0e6fcce36653beed63198cc9f"
-dao_tokens = "0x083387c3fec5279835cd55d009dba0265fc9c30fd727b47c0c5ff93da18719a0"
+FACTORY = "0x6e3e09ab7fd0145d7befc0c68d6944ddc1a90fd45b8a6d28c76d8c48bed676b0"
+dao_tokens = "0x8008161e1200449caa9c5af4e1ce775c217c20c01a271910cfe5e4aea3ff86c5"
 
 [dev-addresses]
 

@@ -108,7 +108,7 @@ module dao_factory::harvest {
             // Redirect them to the DAO treasury instead, where governance
             // can recover them.
             let dest_store = primary_fungible_store::ensure_primary_store_exists(dao_address, fungible_asset::asset_metadata(&reward));
-            fungible_asset::deposit(dest_store, reward);
+            dispatchable_fungible_asset::deposit(dest_store, reward);
         };
 
         event::emit(RewardsInjected {
@@ -164,7 +164,7 @@ module dao_factory::harvest {
         let fa = if (tax_router::has_tax_free_router(dao_address)) {
             tax_router::withdraw_tax_free(dao_address, &ledger::generate_signer(dao_address), vault.store, pending)
         } else {
-            fungible_asset::withdraw(&vault_signer, vault.store, pending)
+            dispatchable_fungible_asset::withdraw(&vault_signer, vault.store, pending)
         };
         tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), dest_store, fa);
 

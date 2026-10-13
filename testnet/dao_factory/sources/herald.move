@@ -30,7 +30,7 @@ module dao_factory::herald {
 
     use dao_factory::sentinel;
     use dao_factory::jubilee;
-    use dao_factory::boost_registry;
+    use dao_boost::boost_registry;
 
     use dao_scripts::library;
     use dao_scripts::vault;
