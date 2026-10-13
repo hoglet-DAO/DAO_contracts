@@ -27,6 +27,7 @@ module dao_scripts::library {
     const E_NOT_FOUND: u64 = 4;
     const E_FEE_TOO_HIGH: u64 = 5;
     const E_INVALID_CID: u64 = 6;
+    const E_DUPLICATE: u64 = 7;
 
     // 13_700 SUPRA (8 decimals) mirrors petra's MAX_CREATION_FEE ceiling.
     const MAX_FEE: u64 = 1_370_000_000_000;
@@ -48,6 +49,9 @@ module dao_scripts::library {
         fee_receiver: address,
         next_id: u64,
         entries: SmartTable<u64, ScriptEntry>,
+        // Content-address index: execution_hash -> script_id. Entries are
+        // immutable and versioned, so an exact re-registration is rejected.
+        hash_index: SmartTable<vector<u8>, u64>,
     }
 
     #[event]
@@ -92,6 +96,7 @@ module dao_scripts::library {
             fee_receiver: @HOG,
             next_id: 1,
             entries: smart_table::new(),
+            hash_index: smart_table::new(),
         });
     }
 
@@ -126,8 +131,15 @@ module dao_scripts::library {
             coin::transfer<SupraCoin>(submitter, config.fee_receiver, config.fee);
         };
 
+        // Immutable registry: reject an exact re-registration of the same bytecode.
+        assert!(
+            !smart_table::contains(&config.hash_index, execution_hash),
+            error::invalid_argument(E_DUPLICATE)
+        );
+
         let id = config.next_id;
         config.next_id = id + 1;
+        smart_table::add(&mut config.hash_index, execution_hash, id);
         smart_table::add(&mut config.entries, id, ScriptEntry {
             execution_hash,
             source_cid,
