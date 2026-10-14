@@ -269,6 +269,12 @@ module dao_factory::herald {
         assert!(config_key <= 11 || (config_key >= 20 && config_key <= 27), error::invalid_argument(E_INVALID_CONFIG_KEY));
         if (config_key <= 8) {
             charter::validate_config_value(dao_address, config_key, config_value);
+            if (config_key == 6) {
+                let total_locked = legacy::get_total_locked(dao_address);
+                if (total_locked > 0) {
+                    assert!(config_value <= total_locked, error::invalid_argument(E_INVALID_CONFIG_KEY));
+                };
+            };
         } else if (config_key >= 9 && config_key <= 11) {
             // Keys 9-11 are jubilee emission parameters (decay, tail emission,
             // gauge split): they only exist on inflationary DAOs.

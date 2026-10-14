@@ -78,6 +78,9 @@ module dao_tax_router::tax_router {
         if (!exists<TaxFreeRouter>(dao_address)) {
             return false
         };
+        if (router_address == dao_address) {
+            return true
+        };
         let router = borrow_global<TaxFreeRouter>(dao_address);
         contains_router(&router.routers, router_address)
     }

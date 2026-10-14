@@ -186,6 +186,9 @@ module dao_factory::charter {
             assert_bounds(config_value, MIN_PERIOD_SECONDS, MAX_DELAY_SECONDS, E_INVALID_PERIOD);
         } else if (config_key == 6) {
             assert!(config_value > 0, error::invalid_argument(E_INVALID_THRESHOLD));
+            // Standard safety guard: prevent setting an astronomical threshold that permanently soft-locks governance.
+            // Caps any single increase to at most 10x of current baseline.
+            assert!(config_value <= config.proposal_threshold * 10, error::invalid_argument(E_INVALID_THRESHOLD));
         } else {
             abort error::invalid_argument(E_INVALID_DELAY) // or E_INVALID_CONFIG_KEY
         };
