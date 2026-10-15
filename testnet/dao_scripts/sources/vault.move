@@ -89,4 +89,60 @@ module dao_scripts::vault {
         // Unset: fall back to the global audit signal (dynamic fast-path).
         library::is_audited(script_id)
     }
+
+    // ============================ TESTS ============================
+
+    #[test_only]
+    use std::string;
+
+    // Registry must exist once; setup is shared across the whole run.
+    #[test_only]
+    fun test_setup(dao_scripts: &signer) {
+        library::test_setup(dao_scripts);
+        if (!exists<VaultState>(@dao_scripts)) {
+            init_module(dao_scripts);
+        };
+    }
+
+    #[test_only]
+    fun submit_script(dao_scripts: &signer, hash: vector<u8>): u64 {
+        let cid = string::utf8(b"bafkreiexampleexampleexampleexampleexampleexampleexample");
+        library::submit_script(dao_scripts, hash, cid, 0u8, false);
+        library::get_count()
+    }
+
+    #[test(dao_scripts = @dao_scripts, factory = @0x6e3e09ab7fd0145d7befc0c68d6944ddc1a90fd45b8a6d28c76d8c48bed676b0)]
+    fun test_vault_tristate(dao_scripts: &signer, factory: &signer) acquires VaultState {
+        test_setup(dao_scripts);
+        let id = submit_script(dao_scripts, x"e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0");
+
+        // unset + NOT audited -> NOT approved
+        assert!(!is_approved(@dao_scripts, id), 1);
+        // explicit allow -> approved
+        add(dao_scripts, id);
+        assert!(is_approved(@dao_scripts, id), 2);
+        // audited, then BLOCK -> still NOT approved (block overrides audit)
+        library::mark_audited(factory, id, true);
+        remove(dao_scripts, id);
+        assert!(!is_approved(@dao_scripts, id), 3);
+    }
+
+    #[test(dao_scripts = @dao_scripts, factory = @0x6e3e09ab7fd0145d7befc0c68d6944ddc1a90fd45b8a6d28c76d8c48bed676b0)]
+    fun test_vault_unset_follows_audit(dao_scripts: &signer, factory: &signer) acquires VaultState {
+        test_setup(dao_scripts);
+        let id = submit_script(dao_scripts, x"f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0");
+
+        // un-audited -> not approved
+        assert!(!is_approved(@dao_scripts, id), 4);
+        // audited (still unset) -> approved via the audit fast-path
+        library::mark_audited(factory, id, true);
+        assert!(is_approved(@dao_scripts, id), 5);
+    }
+
+    #[test(dao_scripts = @dao_scripts)]
+    #[expected_failure]
+    fun test_vault_add_rejects_unknown_script(dao_scripts: &signer) acquires VaultState {
+        test_setup(dao_scripts);
+        add(dao_scripts, 999999); // not in the library -> E_SCRIPT_NOT_FOUND
+    }
 }

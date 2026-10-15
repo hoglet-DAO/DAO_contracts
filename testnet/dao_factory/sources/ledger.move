@@ -29,6 +29,7 @@ module dao_factory::ledger {
         description_hash: vector<u8>,
         start_time: u64,
         end_time: u64,
+        snapshot_epoch: u64,
         eta: u64, 
         executed: bool,
         canceled: bool,
@@ -138,6 +139,7 @@ module dao_factory::ledger {
         description_hash: vector<u8>,
         start_time: u64,
         end_time: u64,
+        snapshot_epoch: u64,
         quorum_required: u64,
         proposal_type: u8,
         upgrade_metadata: vector<u8>,
@@ -148,7 +150,7 @@ module dao_factory::ledger {
         action_target_address: address,
     ): Proposal {
         Proposal {
-            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time, eta: 0,
+            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time, snapshot_epoch, eta: 0,
             executed: false, canceled: false, quorum_reached_historically: false,
             for_votes: 0, against_votes: 0, abstain_votes: 0,
             upgrade_metadata, quorum_required,
@@ -170,13 +172,14 @@ module dao_factory::ledger {
         description_hash: vector<u8>,
         start_time: u64,
         end_time: u64,
+        snapshot_epoch: u64,
         quorum_required: u64,
         asset_address: address,
         recipient: address,
         amount: u64
     ): Proposal {
         new_proposal_base(
-            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time,
+            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time, snapshot_epoch,
             quorum_required, 1, vector::empty(), recipient, amount, 0, 0, asset_address
         )
     }
@@ -190,12 +193,13 @@ module dao_factory::ledger {
         description_hash: vector<u8>,
         start_time: u64,
         end_time: u64,
+        snapshot_epoch: u64,
         quorum_required: u64,
         nft_address: address,
         recipient: address
     ): Proposal {
         new_proposal_base(
-            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time,
+            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time, snapshot_epoch,
             quorum_required, 5, vector::empty(), recipient, 1, 0, 0, nft_address
         )
     }
@@ -209,12 +213,13 @@ module dao_factory::ledger {
         description_hash: vector<u8>,
         start_time: u64,
         end_time: u64,
+        snapshot_epoch: u64,
         quorum_required: u64,
         config_key: u8,
         config_value: u64
     ): Proposal {
         new_proposal_base(
-            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time,
+            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time, snapshot_epoch,
             quorum_required, 2, vector::empty(), @0x0, 0, config_key, config_value, @0x0
         )
     }
@@ -229,6 +234,7 @@ module dao_factory::ledger {
         description_hash: vector<u8>,
         start_time: u64,
         end_time: u64,
+        snapshot_epoch: u64,
         quorum_required: u64,
         setting_type: u8,
         target_address: address,
@@ -236,7 +242,7 @@ module dao_factory::ledger {
         bool_value: u64
     ): Proposal {
         new_proposal_base(
-            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time,
+            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time, snapshot_epoch,
             quorum_required, 7, string_value, @0x0, 0, setting_type, bool_value, target_address
         )
     }
@@ -250,11 +256,12 @@ module dao_factory::ledger {
         description_hash: vector<u8>,
         start_time: u64,
         end_time: u64,
+        snapshot_epoch: u64,
         quorum_required: u64,
         new_guardian: address
     ): Proposal {
         new_proposal_base(
-            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time,
+            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time, snapshot_epoch,
             quorum_required, 4, vector::empty(), @0x0, 0, 0, 0, new_guardian
         )
     }
@@ -268,13 +275,14 @@ module dao_factory::ledger {
         description_hash: vector<u8>,
         start_time: u64,
         end_time: u64,
+        snapshot_epoch: u64,
         quorum_required: u64,
         action_type: u8,
         target_address: address,
         gauge_id: u64
     ): Proposal {
         new_proposal_base(
-            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time,
+            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time, snapshot_epoch,
             quorum_required, 3, vector::empty(), @0x0, 0, action_type, gauge_id, target_address
         )
     }
@@ -288,13 +296,14 @@ module dao_factory::ledger {
         description_hash: vector<u8>,
         start_time: u64,
         end_time: u64,
+        snapshot_epoch: u64,
         quorum_required: u64,
         action_type: u8,
         collection_addr: address,
         boost_bps: u64
     ): Proposal {
         new_proposal_base(
-            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time,
+            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time, snapshot_epoch,
             quorum_required, 8, vector::empty(), @0x0, 0, action_type, boost_bps, collection_addr
         )
     }
@@ -310,6 +319,7 @@ module dao_factory::ledger {
         description_hash: vector<u8>,
         start_time: u64,
         end_time: u64,
+        snapshot_epoch: u64,
         quorum_required: u64,
         execution_hash: vector<u8>,
         args_commitment: vector<u8>,
@@ -318,7 +328,7 @@ module dao_factory::ledger {
         let packed = execution_hash;
         vector::append(&mut packed, args_commitment);
         new_proposal_base(
-            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time,
+            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time, snapshot_epoch,
             quorum_required, 9, packed, @0x0, script_id, 0, 0, @0x0
         )
     }
@@ -333,12 +343,13 @@ module dao_factory::ledger {
         description_hash: vector<u8>,
         start_time: u64,
         end_time: u64,
+        snapshot_epoch: u64,
         quorum_required: u64,
         script_id: u64,
         add: bool,
     ): Proposal {
         new_proposal_base(
-            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time,
+            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time, snapshot_epoch,
             quorum_required, 10, vector::empty(), @0x0, script_id, 0,
             (if (add) 1 else 0), @0x0
         )
@@ -411,6 +422,13 @@ module dao_factory::ledger {
     public fun get_proposal_quorum(dao_address: address, proposal_id: u64): u64 acquires DaoState {
         let state = borrow_global<DaoState>(dao_address);
         get_proposal_safe(state, proposal_id).quorum_required
+    }
+
+    // Returns the snapshot epoch recorded at proposal creation time (M-02)
+    #[view]
+    public fun get_proposal_snapshot_epoch(dao_address: address, proposal_id: u64): u64 acquires DaoState {
+        let state = borrow_global<DaoState>(dao_address);
+        get_proposal_safe(state, proposal_id).snapshot_epoch
     }
 
     #[view]

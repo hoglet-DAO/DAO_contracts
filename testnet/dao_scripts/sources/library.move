@@ -273,4 +273,81 @@ module dao_scripts::library {
     public fun get_count(): u64 acquires LibraryConfig {
         borrow_global<LibraryConfig>(@dao_scripts).next_id - 1
     }
+
+    // ============================ TESTS ============================
+
+    // Idempotent: Move unit tests share global state, so the config is created
+    // only once across the whole run.
+    #[test_only]
+    fun setup(dao_scripts: &signer) {
+        let fw = supra_framework::account::create_signer_for_test(@supra_framework);
+        timestamp::set_time_has_started_for_testing(&fw);
+        if (!exists<LibraryConfig>(@dao_scripts)) {
+            init_module(dao_scripts);
+        };
+    }
+
+    // Exposed so sibling modules (vault) can bootstrap the library in their tests.
+    #[test_only]
+    public fun test_setup(deployer: &signer) {
+        setup(deployer);
+    }
+
+    #[test(dao_scripts = @dao_scripts)]
+    fun test_submit_registers_entry(dao_scripts: &signer) acquires LibraryConfig {
+        setup(dao_scripts);
+        let hash = x"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let cid = string::utf8(b"bafkreiexampleexampleexampleexampleexampleexampleexample");
+        submit_script(dao_scripts, hash, cid, 7u8, false);
+
+        let id = get_count();
+        assert!(script_exists(id), 1);
+        assert!(get_execution_hash(id) == hash, 2);
+        assert!(is_audited(id) == false, 3);
+        assert!(has_args(id) == false, 4);
+    }
+
+    #[test(dao_scripts = @dao_scripts)]
+    #[expected_failure]
+    fun test_submit_rejects_duplicate_hash(dao_scripts: &signer) acquires LibraryConfig {
+        setup(dao_scripts);
+
+        let hash = x"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let cid = string::utf8(b"bafkreiexampleexampleexampleexampleexampleexampleexample");
+
+        submit_script(dao_scripts, hash, cid, 0u8, false);
+        // Same bytecode again -> must revert with E_DUPLICATE.
+        submit_script(dao_scripts, hash, cid, 0u8, false);
+    }
+
+    #[test(dao_scripts = @dao_scripts)]
+    #[expected_failure]
+    fun test_submit_rejects_bad_hash_length(dao_scripts: &signer) acquires LibraryConfig {
+        setup(dao_scripts);
+        let hash = x"aa";
+        let cid = string::utf8(b"bafkreiexampleexampleexampleexampleexampleexampleexample");
+        submit_script(dao_scripts, hash, cid, 0u8, false);
+    }
+
+    #[test(dao_scripts = @dao_scripts)]
+    #[expected_failure]
+    fun test_submit_rejects_bad_cid(dao_scripts: &signer) acquires LibraryConfig {
+        setup(dao_scripts);
+        let hash = x"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        let cid = string::utf8(b"short");
+        submit_script(dao_scripts, hash, cid, 0u8, false);
+    }
+
+    #[test(dao_scripts = @dao_scripts, factory = @0x6e3e09ab7fd0145d7befc0c68d6944ddc1a90fd45b8a6d28c76d8c48bed676b0)]
+    fun test_mark_audited(dao_scripts: &signer, factory: &signer) acquires LibraryConfig {
+        setup(dao_scripts);
+        let hash = x"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+        let cid = string::utf8(b"bafkreiexampleexampleexampleexampleexampleexampleexample");
+        submit_script(dao_scripts, hash, cid, 0u8, true);
+
+        let id = get_count();
+        assert!(is_audited(id) == false, 1);
+        mark_audited(factory, id, true);
+        assert!(is_audited(id) == true, 2);
+    }
 }

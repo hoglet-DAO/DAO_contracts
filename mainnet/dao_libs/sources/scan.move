@@ -12,6 +12,8 @@
 // do not count against the core package size limit.
 module dao_libs::scan {
     use aptos_std::smart_vector::{Self, SmartVector};
+    use aptos_std::smart_table::{Self, SmartTable};
+    use dao_libs::math;
 
     /// Voting-power snapshot of a veToken at a given epoch.
     /// Same fields and abilities (copy, drop, store) as the original private
@@ -22,10 +24,11 @@ module dao_libs::scan {
         end_epoch: u64,
     }
 
-    /// Snapshot of a DAO registry's total locked amount at a given epoch.
+    /// Snapshot of a DAO registry's total locked amount and total voting power at a given epoch.
     struct RegistrySnapshot has copy, drop, store {
         pilgrim: u64,
         total_locked: u64,
+        total_voting_power: u64,
     }
 
     /// Public constructor for Snapshot (struct literals are restricted to
@@ -102,6 +105,27 @@ module dao_libs::scan {
         0
     }
 
+    /// Total voting power of a DAO at `query_epoch`.
+    ///
+    /// Returns 0 when there is no history or the query predates the first snapshot.
+    public fun total_voting_power_at(snapshots: &SmartVector<RegistrySnapshot>, query_epoch: u64): u64 {
+        let len = smart_vector::length(snapshots);
+        if (len == 0) return 0;
+
+        let first_snap = smart_vector::borrow(snapshots, 0);
+        if (query_epoch < first_snap.pilgrim) return 0;
+
+        let i = len;
+        while (i > 0) {
+            i = i - 1;
+            let snap = smart_vector::borrow(snapshots, i);
+            if (snap.pilgrim <= query_epoch) {
+                return snap.total_voting_power
+            };
+        };
+        0
+    }
+
     /// Upserts the voting-power snapshot for `epoch`: updates the last
     /// snapshot if it belongs to this epoch, otherwise appends a new one.
     /// (Extracted from legacy::upsert_snapshot.)
@@ -125,21 +149,24 @@ module dao_libs::scan {
         };
     }
 
-    /// Same upsert for the registry's total-locked history.
+    /// Same upsert for the registry's total-locked and total-voting-power history.
     /// (Extracted from legacy::update_total_locked_history.)
     public fun upsert_registry_snapshot(
         snapshots: &mut SmartVector<RegistrySnapshot>,
         epoch: u64,
         total_locked: u64,
+        total_voting_power: u64,
     ) {
         let len = smart_vector::length(snapshots);
         if (len > 0 && smart_vector::borrow(snapshots, len - 1).pilgrim == epoch) {
             let snap = smart_vector::borrow_mut(snapshots, len - 1);
             snap.total_locked = total_locked;
+            snap.total_voting_power = total_voting_power;
         } else {
             smart_vector::push_back(snapshots, RegistrySnapshot {
                 pilgrim: epoch,
                 total_locked: total_locked,
+                total_voting_power: total_voting_power,
             });
         };
     }
@@ -154,5 +181,91 @@ module dao_libs::scan {
             i = i + 1;
         };
         smart_vector::destroy_empty(snapshots);
+    }
+
+    /// Calculates a lock's weekly decay slope: amount / max_lock_epochs (floored at 1 if amount > 0).
+    public fun calculate_lock_slope(amount: u64, max_lock_epochs: u64): u64 {
+        let slope = math::mul_div_u64(amount, 1, max_lock_epochs);
+        if (amount > 0 && slope == 0) { 1 } else { slope }
+    }
+
+    /// Calculates a lock's voting power at a given remaining epochs duration.
+    public fun calculate_lock_power(amount: u64, epochs_left: u64, max_lock_epochs: u64): u64 {
+        math::mul_div_u64(amount, epochs_left, max_lock_epochs)
+    }
+
+    /// Advances bias and slope from `from_epoch` up to `target_epoch`, applying scheduled slope changes.
+    /// Returns (new_epoch, new_bias, new_slope).
+    public fun advance_ve_decay(
+        from_epoch: u64,
+        bias: u64,
+        slope: u64,
+        slope_changes: &SmartTable<u64, u64>,
+        target_epoch: u64,
+    ): (u64, u64, u64) {
+        let e = from_epoch;
+        while (e < target_epoch) {
+            e = e + 1;
+            if (bias > slope) {
+                bias = bias - slope;
+            } else {
+                bias = 0;
+            };
+            if (smart_table::contains(slope_changes, e)) {
+                let d_slope = *smart_table::borrow(slope_changes, e);
+                if (slope > d_slope) {
+                    slope = slope - d_slope;
+                } else {
+                    slope = 0;
+                };
+            };
+        };
+        (e, bias, slope)
+    }
+
+    /// Simulates decayed voting power at `query_epoch` given starting epoch, bias, slope,
+    /// and scheduled slope changes.
+    public fun simulate_decay_power(
+        from_epoch: u64,
+        bias: u64,
+        slope: u64,
+        slope_changes: &SmartTable<u64, u64>,
+        query_epoch: u64,
+    ): u64 {
+        if (query_epoch <= from_epoch) {
+            return bias
+        };
+        let (_, final_bias, _) = advance_ve_decay(from_epoch, bias, slope, slope_changes, query_epoch);
+        final_bias
+    }
+
+    /// Adds a slope delta scheduled to expire at `epoch`.
+    public fun add_slope_change(
+        slope_changes: &mut SmartTable<u64, u64>,
+        epoch: u64,
+        slope: u64,
+    ) {
+        if (!smart_table::contains(slope_changes, epoch)) {
+            smart_table::add(slope_changes, epoch, slope);
+        } else {
+            let cur = smart_table::borrow_mut(slope_changes, epoch);
+            *cur = *cur + slope;
+        };
+    }
+
+    /// Removes or decrements a slope delta scheduled to expire at `epoch`.
+    public fun sub_slope_change(
+        slope_changes: &mut SmartTable<u64, u64>,
+        epoch: u64,
+        slope: u64,
+    ) {
+        if (smart_table::contains(slope_changes, epoch)) {
+            let cur = smart_table::borrow_mut(slope_changes, epoch);
+            if (*cur > slope) {
+                *cur = *cur - slope;
+            } else {
+                smart_table::remove(slope_changes, epoch);
+            };
+        };
     }
 }

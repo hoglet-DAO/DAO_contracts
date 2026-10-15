@@ -70,7 +70,9 @@ module dao_libs::math {
     }
 
     /// Computes the dynamic quorum from recent participations:
-    /// 50% of average recent participation, clamped to [10%, 200%] of default_quorum.
+    /// 50% of average recent participation, clamped to [100%, 200%] of default_quorum.
+    /// Clamped to at least default_quorum so the quorum can scale up during surges
+    /// but never falls below the baseline configured quorum (M-01).
     public fun calculate_dynamic_quorum(participations: &vector<u128>, default_quorum: u64): u64 {
         let len = std::vector::length(participations);
         if (len == 0) {
@@ -88,11 +90,7 @@ module dao_libs::math {
         let raw_dynamic_quorum = avg / 2;
         
         let max_ceiling = ((default_quorum as u128) * 200) / 100;
-        let min_floor = ((default_quorum as u128) * 10) / 100;
-        
-        if (min_floor == 0 && default_quorum > 0) {
-            min_floor = 1;
-        };
+        let min_floor = (default_quorum as u128);
 
         let clamped_quorum = if (raw_dynamic_quorum > max_ceiling) {
             max_ceiling
@@ -103,6 +101,80 @@ module dao_libs::math {
         };
 
         (clamped_quorum as u64)
+    }
+
+    // ============================ TESTS ============================
+
+    #[test]
+    fun test_mul_div() {
+        assert!(mul_div_u64(2, 3, 6) == 1, 1);
+        assert!(mul_div_u64(10, 10, 4) == 25, 2);
+        assert!(mul_div_u128(100, 3, 7) == 42, 3);
+    }
+
+    #[test]
+    #[expected_failure]
+    fun test_mul_div_div_by_zero() {
+        mul_div_u64(1, 1, 0);
+    }
+
+    #[test]
+    fun test_bps_ppm() {
+        assert!(apply_bps(1000, 500) == 50, 11);
+        assert!(apply_bps(1000, 10000) == 1000, 12);
+        assert!(apply_ppm(1_000_000, 1_000_000) == 1_000_000, 13);
+    }
+
+    #[test]
+    fun test_threshold_min_one() {
+        assert!(compute_dynamic_threshold(0, 1000) == 1, 21); // clamps to 1
+        assert!(compute_dynamic_threshold(1_000_000, 10000) == 10_000, 22); // 1%
+    }
+
+    #[test]
+    fun test_assert_bounds_ok() {
+        assert_bounds(5, 1, 10, 99);
+    }
+
+    #[test]
+    #[expected_failure]
+    fun test_assert_bounds_out_of_range() {
+        assert_bounds(11, 1, 10, 99);
+    }
+
+    #[test]
+    fun test_rebase_pending() {
+        assert!(rebase_pending(100, 1_000_000_000_000_000_000, 40) == 60, 31);
+        assert!(rebase_pending(100, 1_000_000_000_000_000_000, 200) == 0, 32);
+    }
+
+    #[test]
+    fun test_add_per_share() {
+        assert!(add_per_share(100, 1000, 0) == 100_000_000_000_000_000, 41);
+    }
+
+    #[test]
+    fun test_boosted_working_balance() {
+        assert!(calculate_boosted_working_balance(1000, 500) == 1050, 51);
+        assert!(calculate_boosted_working_balance(1000, 0) == 1000, 52);
+    }
+
+    #[test]
+    fun test_dynamic_quorum() {
+        let empty = std::vector::empty<u128>();
+        assert!(calculate_dynamic_quorum(&empty, 1000) == 1000, 61); // no data -> default
+
+        let p = std::vector::empty<u128>();
+        std::vector::push_back(&mut p, 1000); // avg 1000 -> raw 500 (below floor 1000) -> clamped to floor 1000
+        assert!(calculate_dynamic_quorum(&p, 1000) == 1000, 62);
+
+        let p2 = std::vector::empty<u128>();
+        std::vector::push_back(&mut p2, 3000); // avg 3000 -> raw 1500 (within [1000, 2000]) -> 1500
+        assert!(calculate_dynamic_quorum(&p2, 1000) == 1500, 63);
+
+        let q = std::vector::empty<u128>();
+        std::vector::push_back(&mut q, 100_000); // huge -> clamped to ceiling 2000
+        assert!(calculate_dynamic_quorum(&q, 1000) == 2000, 64);
     }
 }
 

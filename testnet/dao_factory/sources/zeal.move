@@ -12,7 +12,7 @@ module dao_factory::zeal {
     use supra_framework::fungible_asset::{Self, FungibleAsset, Metadata};
     use supra_framework::primary_fungible_store;
     use supra_framework::dispatchable_fungible_asset;
-    use supra_framework::object::{Self, ExtendRef};
+    use supra_framework::object::{Self, ExtendRef, TransferRef};
 
     use supra_framework::event;
     use std::error;
@@ -134,6 +134,9 @@ module dao_factory::zeal {
         staking_tokens: vector<address>,
     ) acquires GaugeRegistry {
         let constructor_ref = object::create_object(signer::address_of(dao_signer));
+        // H-02 Defense: Disable ungated transfers on Zeal vault object to prevent theft via Type 5 proposals
+        let transfer_ref = object::generate_transfer_ref(&constructor_ref);
+        object::disable_ungated_transfer(&transfer_ref);
 
         move_to(dao_signer, GaugeRegistry {
             gauges: smart_table::new(),
@@ -364,12 +367,16 @@ module dao_factory::zeal {
             return
         };
 
-        // Push to Pull Refactor: Store the FA in the vault and record the total emissions for this epoch
-        smart_table::upsert(&mut registry.epoch_total_emissions, target_epoch, total_emissions);
-        let vault_dest = primary_fungible_store::ensure_primary_store_exists(registry.vault_address, fungible_asset::asset_metadata(&fa));
+        // Push to Pull Refactor: Store the FA in the vault and record the actual emissions for this epoch
+        let token_metadata = fungible_asset::asset_metadata(&fa);
+        let vault_dest = primary_fungible_store::ensure_primary_store_exists(registry.vault_address, token_metadata);
+        let bal_before = primary_fungible_store::balance(registry.vault_address, token_metadata);
         dispatchable_fungible_asset::deposit(vault_dest, fa);
+        let bal_after = primary_fungible_store::balance(registry.vault_address, token_metadata);
+        let actual_emissions = bal_after - bal_before;
 
-        event::emit(EmissionsDistributed { dao_address, pilgrim: target_epoch, total_amount: total_emissions });
+        smart_table::upsert(&mut registry.epoch_total_emissions, target_epoch, actual_emissions);
+        event::emit(EmissionsDistributed { dao_address, pilgrim: target_epoch, total_amount: actual_emissions });
     }
 
     // Pull Architecture: Anyone can call this to push a gauge's share of emissions to its destination

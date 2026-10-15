@@ -132,11 +132,17 @@ module dao_tax_router::tax_router {
 
     /// Withdraws `amount` from `store` using the DAO's cap (bypasses the
     /// token's dispatch hooks).
+    /// Returns true if `router_addr` owns `store` directly or transitively as a protocol object.
+    public fun is_store_owned_by(store: object::Object<FungibleStore>, router_addr: address): bool {
+        object::owner(store) == router_addr || object::is_owner(store, router_addr)
+    }
+
+    /// Withdraws `amount` from `store` using the DAO's cap (bypasses the token's dispatch hooks).
     ///
-    /// FIX (audit13 R-1) hardening: the caller must (a) hold the signer of a
-    /// WHITELISTED router (the object signer user pubcalls cannot produce
-    /// it) and (b) OWN the target store, by audit9 H-2. Net effect: only the
-    /// launchpad pool can extract from its own custodial reserve.
+    /// H-04 Remediation: strictly enforces store ownership.
+    /// Every router (including the DAO master signer) can only extract from stores that it
+    /// directly or transitively owns (treasury, escrow, rebase, vaults, gauges).
+    /// User wallets, veNFTs, and external stores can NEVER be drained.
     public fun withdraw_tax_free(
         dao_address: address,
         router: &signer,
@@ -148,16 +154,29 @@ module dao_tax_router::tax_router {
             error::permission_denied(E_NOT_WHITELISTED_ROUTER)
         );
         let router_addr = signer::address_of(router);
-        // The DAO MASTER signer (the same authority that already holds the
-        // DAO's mint/burn/TreasuryRef powers) is exempt from the owner check:
-        // the DAO's own trusted infra withdraws from module-owned vault
-        // stores. Every OTHER router keeps the strict audit9 H-2 owner rule.
-        if (router_addr != dao_address) {
-            assert!(
-                object::owner(store) == router_addr,
-                error::permission_denied(E_NOT_STORE_OWNER)
-            );
-        };
+        assert!(
+            is_store_owned_by(store, router_addr),
+            error::permission_denied(E_NOT_STORE_OWNER)
+        );
+        let router_res = borrow_global<TaxFreeRouter>(dao_address);
+        smart_token::withdraw_tax_free(&router_res.cap, store, amount)
+    }
+
+    /// Withdraws tax-free from a store signed and directly owned by `owner`.
+    /// Enables protocol deposit flows (such as deposit_bribe or create_lock) where the user
+    /// authorizes their own tax-free transfer into protocol custody, without exposing
+    /// arbitrary store withdrawal to DAO signers.
+    public fun withdraw_tax_free_by_owner(
+        dao_address: address,
+        owner: &signer,
+        store: object::Object<FungibleStore>,
+        amount: u64
+    ): FungibleAsset acquires TaxFreeRouter {
+        assert!(exists<TaxFreeRouter>(dao_address), error::not_found(E_NOT_WHITELISTED_ROUTER));
+        assert!(
+            object::owner(store) == signer::address_of(owner),
+            error::permission_denied(E_NOT_STORE_OWNER)
+        );
         let router_res = borrow_global<TaxFreeRouter>(dao_address);
         smart_token::withdraw_tax_free(&router_res.cap, store, amount)
     }

@@ -10,7 +10,7 @@ module dao_factory::petra {
     use std::signer;
     use supra_framework::account;
     use supra_framework::fungible_asset::{Self, Metadata, MintRef};
-    use supra_framework::object::{Self, Object};
+    use supra_framework::object::{Self, Object, TransferRef};
     use supra_framework::event;
     use supra_framework::smart_table::{Self, SmartTable};
     use supra_framework::supra_coin::SupraCoin;
@@ -61,6 +61,8 @@ module dao_factory::petra {
     const E_NOT_INFLATIONARY: u64 = 25;
     const E_INVALID_GRACE_PERIOD: u64 = 26;
     const E_INFLATIONARY_REQUIRES_SMART_TOKEN: u64 = 27;
+    const E_DAO_ALREADY_ACTIVE: u64 = 28;
+    const E_DAO_NOT_FOUND: u64 = 29;
 
     // Constants 
     const MAX_CREATION_FEE: u64 = 1_370_000_000_000; // 13_700 SUPRA (8 decimals)
@@ -130,6 +132,19 @@ module dao_factory::petra {
         epoch: u64,
     }
 
+    #[event]
+    struct StaticDaoApproved has drop, store {
+        admin: address,
+        dao_address: address,
+    }
+
+    #[event]
+    struct StaticDaoRejected has drop, store {
+        admin: address,
+        dao_address: address,
+        governance_token: address,
+    }
+
     // Initialization 
 
     // Runs automatically when publishing the contract
@@ -144,7 +159,7 @@ module dao_factory::petra {
             default_proposal_threshold_ppm: 137, // 137 PPM = 0.0137% of Supply
             default_quorum_numerator: 7, // 7% Quorum
             default_quorum_denominator: 100,
-            default_super_quorum_threshold: 73, // 73% Super Quorum
+            default_super_quorum_threshold: 62, // 62% Super Quorum (Standard Qualified Majority)
             default_late_quorum_extension: 86400,
             default_timelock_delay: 86400,
             default_grace_period: 1209600, // 14 days
@@ -564,6 +579,38 @@ module dao_factory::petra {
         jubilee::sync_clock(dao_address);
     }
 
+    // M-06 Defense: Approve and activate a pending static DAO (Called by Factory Sentinel / Admin)
+    public entry fun approve_static_dao(
+        admin: &signer,
+        dao_address: address
+    ) acquires FactoryConfig {
+        assert_admin(admin);
+        assert!(!charter::is_active(dao_address), error::invalid_state(E_DAO_ALREADY_ACTIVE));
+        charter::set_active_by_factory(dao_address);
+        event::emit(StaticDaoApproved {
+            admin: signer::address_of(admin),
+            dao_address,
+        });
+    }
+
+    // M-06 Defense: Reject and unbind an inactive static DAO squatting or fraudulently claiming a token
+    public entry fun reject_static_dao(
+        admin: &signer,
+        governance_token: Object<Metadata>
+    ) acquires FactoryConfig, DaoRegistry {
+        assert_admin(admin);
+        let registry = borrow_global_mut<DaoRegistry>(@dao_factory);
+        assert!(smart_table::contains(&registry.registered_tokens, governance_token), error::not_found(E_DAO_NOT_FOUND));
+        let dao_address = *smart_table::borrow(&registry.registered_tokens, governance_token);
+        assert!(!charter::is_active(dao_address), error::invalid_state(E_DAO_ALREADY_ACTIVE));
+        smart_table::remove(&mut registry.registered_tokens, governance_token);
+        event::emit(StaticDaoRejected {
+            admin: signer::address_of(admin),
+            dao_address,
+            governance_token: object::object_address(&governance_token),
+        });
+    }
+
     // Activates ONLY the gauge of the pool that received seed liquidity at
     // migration time. Birth gauges start inactive (at deploy it is not yet
     // known which pool the migration will seed); the launcher calls this in
@@ -738,6 +785,9 @@ module dao_factory::petra {
         herald::initialize(dao_signer);
 
         let constructor_ref = object::create_object(dao_address);
+        // H-02 Defense: Disable ungated transfers on Harvest vault object to prevent theft via Type 5 proposals
+        let transfer_ref = object::generate_transfer_ref(&constructor_ref);
+        object::disable_ungated_transfer(&transfer_ref);
         harvest::initialize(dao_signer, governance_token, &constructor_ref);
     }
 
@@ -776,6 +826,142 @@ module dao_factory::petra {
         assert!(
             charter::get_launcher_address(dao_address) == launcher_addr,
             error::permission_denied(E_UNAUTHORIZED_LAUNCHER)
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Tests -- everything below is #[test_only] and stripped at deploy.
+    // ------------------------------------------------------------------
+
+    #[test_only]
+    use supra_framework::primary_fungible_store;
+
+    // Shared bootstrap: bootstraps a fresh factory + a governance token with
+    // tracked positive supply, returns the token object. Creation is made free
+    // so coin-less test accounts can pay. NOTE: tests share global VM state,
+    // so each test must use a distinct creator (distinct token name).
+    #[test_only]
+    fun setup_factory_and_token(
+        factory: &signer,
+        admin: &signer,
+        creator: &signer
+    ): Object<Metadata> acquires FactoryConfig {
+        // The Move test VM has no clock: bootstrap timestamp before anything
+        // that reads it (prepare_dao_creation calls now_microseconds).
+        let fw = account::create_signer_for_test(@supra_framework);
+        timestamp::set_time_has_started_for_testing(&fw);
+
+        if (!exists<FactoryConfig>(@dao_factory)) {
+            init_module(factory);
+        };
+        let creator_addr = signer::address_of(creator);
+        account::create_account_for_test(creator_addr);
+
+        // Governance token: primary-store-enabled, tracked positive supply.
+        let token_ref = object::create_named_object(creator, b"TEST_DAO_TOKEN");
+        primary_fungible_store::create_primary_store_enabled_fungible_asset(
+            &token_ref,
+            option::none(),
+            string::utf8(b"Test DAO Token"),
+            string::utf8(b"TDT"),
+            8,
+            string::utf8(b"icon"),
+            string::utf8(b"project")
+        );
+        let mint_ref = fungible_asset::generate_mint_ref(&token_ref);
+        let coins = fungible_asset::mint(&mint_ref, 1_000_000_000_000);
+        primary_fungible_store::deposit(creator_addr, coins);
+
+        // Free creation so the coin-less test account can pay.
+        set_creation_fee(admin, 0);
+
+        object::object_from_constructor_ref<Metadata>(&token_ref)
+    }
+
+    // Permissionless static creation: resource account + core modules, then
+    // registered + pending approval from sentinel/admin.
+    #[test(factory = @dao_factory, admin = @dao_genesis, creator = @0xC0FFEE)]
+    fun test_create_static_dao(
+        factory: &signer,
+        admin: &signer,
+        creator: &signer
+    ) acquires FactoryConfig, DaoRegistry, LauncherRegistry {
+        let token = setup_factory_and_token(factory, admin, creator);
+
+        // Full static path: resource account + core module initialization.
+        create_dao_static(creator, token);
+
+        // Registry binding + metadata mirror + pending-by-default semantics.
+        let dao_opt = get_dao_for_token(token);
+        assert!(option::is_some(&dao_opt), 1);
+        let dao_addr = *option::borrow(&dao_opt);
+        assert!(dao_addr != @0x0, 2);
+        assert!(legacy::get_token_metadata_address(dao_addr) == object::object_address(&token), 3);
+        assert!(!charter::is_active(dao_addr), 4);
+        approve_static_dao(admin, dao_addr);
+        assert!(charter::is_active(dao_addr), 5);
+    }
+
+    // M-06: A squatted static DAO can be rejected and unbound by admin, freeing the token.
+    #[test(factory = @dao_factory, admin = @dao_genesis, creator = @0xC0FF03)]
+    fun test_reject_and_unbind_static_dao(
+        factory: &signer,
+        admin: &signer,
+        creator: &signer
+    ) acquires FactoryConfig, DaoRegistry, LauncherRegistry {
+        let token = setup_factory_and_token(factory, admin, creator);
+
+        create_dao_static(creator, token);
+        let dao_addr = *option::borrow(&get_dao_for_token(token));
+        assert!(!charter::is_active(dao_addr), 1);
+
+        // Sentinel / admin rejects the squatted DAO
+        reject_static_dao(admin, token);
+
+        // Registry is now unbound
+        assert!(option::is_none(&get_dao_for_token(token)), 2);
+
+        // Now the legitimate creator can register it
+        create_dao_static(creator, token);
+        assert!(option::is_some(&get_dao_for_token(token)), 3);
+    }
+
+    // The same governance token cannot back two DAOs.
+    #[test(factory = @dao_factory, admin = @dao_genesis, creator = @0xC0FF01)]
+    #[expected_failure(abort_code = 0x80005)] // already_exists(E_DAO_ALREADY_EXISTS)
+    fun test_static_dao_duplicate_rejected(
+        factory: &signer,
+        admin: &signer,
+        creator: &signer
+    ) acquires FactoryConfig, DaoRegistry, LauncherRegistry {
+        let token = setup_factory_and_token(factory, admin, creator);
+
+        create_dao_static(creator, token);
+        create_dao_static(creator, token); // second call must abort
+    }
+
+    // SECURITY: an inflationary DAO created by a launcher MUST use a
+    // dao_tokens::smart_token (its rebase/gauge/bribe flows assume the
+    // TaxFreeCap); a plain FA is rejected up front.
+    #[test(factory = @dao_factory, admin = @dao_genesis, creator = @0xC0FF02, launcher = @0x1A0)]
+    #[expected_failure(abort_code = 0x1001B)] // invalid_argument(E_INFLATIONARY_REQUIRES_SMART_TOKEN)
+    fun test_inflationary_requires_smart_token(
+        factory: &signer,
+        admin: &signer,
+        creator: &signer,
+        launcher: &signer
+    ) acquires FactoryConfig, DaoRegistry, LauncherRegistry {
+        let token = setup_factory_and_token(factory, admin, creator);
+
+        // Approve the launcher, then attempt an inflationary creation with a
+        // non-smart_token FA -> the guard aborts before any module init.
+        approve_launcher(admin, signer::address_of(launcher));
+        create_dao_inflationary_from_launcher(
+            creator,
+            launcher,
+            token,
+            1_000_000_000_000,
+            vector::empty<address>()
         );
     }
 }

@@ -172,8 +172,10 @@ module dao_tokens::smart_token {
         if (exists<DaoTokenConfig>(token_addr)) {
             let config = borrow_global<DaoTokenConfig>(token_addr);
             
-            // SECURITY FIX: Exemption bypasses blacklist, anti-whale AND taxes.
-            let is_exempt = vector::contains(&config.exempt_addresses, &sender_address);
+            // SECURITY FIX (M-04): Automatically exempt treasury and admin to prevent EAMOUNT_MISMATCH on DAO treasury transfers.
+            let is_exempt = vector::contains(&config.exempt_addresses, &sender_address)
+                || sender_address == config.treasury_address
+                || sender_address == config.dao_admin_address;
             if (!is_exempt) {
                 if (config.is_blacklist_active) {
                     assert!(!vector::contains(&config.blacklist, &sender_address), error::permission_denied(E_BLACKLISTED));
@@ -219,8 +221,10 @@ module dao_tokens::smart_token {
         if (exists<DaoTokenConfig>(token_addr)) {
             let config = borrow_global<DaoTokenConfig>(token_addr);
             
-            // SECURITY FIX: Exemption bypasses blacklist, anti-whale AND taxes.
-            let is_exempt = vector::contains(&config.exempt_addresses, &receiver_address);
+            // SECURITY FIX (M-04): Automatically exempt treasury and admin.
+            let is_exempt = vector::contains(&config.exempt_addresses, &receiver_address)
+                || receiver_address == config.treasury_address
+                || receiver_address == config.dao_admin_address;
             if (!is_exempt) {
                 if (config.is_blacklist_active) {
                     assert!(!vector::contains(&config.blacklist, &receiver_address), error::permission_denied(E_BLACKLISTED));
@@ -263,6 +267,11 @@ module dao_tokens::smart_token {
         config.dao_admin_address = new_admin;
         config.treasury_address = new_admin;
 
+        // Automatically grant exemption to the new DAO admin/treasury (M-04)
+        if (!vector::contains(&config.exempt_addresses, &new_admin)) {
+            vector::push_back(&mut config.exempt_addresses, new_admin);
+        };
+
         event::emit(AdminChangedEvent {
             token_addr,
             old_admin,
@@ -280,6 +289,11 @@ module dao_tokens::smart_token {
         
         let old_treasury = config.treasury_address;
         config.treasury_address = treasury_address;
+
+        // Automatically grant exemption to the updated treasury (M-04)
+        if (treasury_address != @0x0 && !vector::contains(&config.exempt_addresses, &treasury_address)) {
+            vector::push_back(&mut config.exempt_addresses, treasury_address);
+        };
 
         event::emit(TreasuryUpdatedEvent {
             token_addr,
@@ -537,7 +551,7 @@ module dao_tokens::smart_token {
     }
 
     #[test(deployer = @dao_tokens, hacker = @0xBAD)]
-    #[expected_failure(abort_code = E_NOT_AUTHORIZED)]
+    #[expected_failure(abort_code = 0x50001)] // permission_denied(E_NOT_AUTHORIZED)
     public fun test_hacker_fails(deployer: &signer, hacker: &signer) acquires HookRefs, DaoTokenConfig {
         let deployer_addr = std::signer::address_of(deployer);
         account::create_account_for_test(deployer_addr);

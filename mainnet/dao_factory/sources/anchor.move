@@ -15,6 +15,7 @@ module dao_factory::anchor {
     use dao_tokens::smart_token;
     use dao_scripts::vault;
     use supra_framework::object;
+    use aptos_token_objects::token;
     use supra_framework::coin;
     use supra_framework::supra_coin::SupraCoin;
     use supra_framework::fungible_asset::Metadata;
@@ -38,6 +39,7 @@ module dao_factory::anchor {
     const E_NOT_INFLATIONARY: u64 = 14;
     const E_PROPOSAL_NOT_EXPIRED: u64 = 16;
     const E_SCRIPT_HASH_MISMATCH: u64 = 17;
+    const E_CANNOT_CANCEL_GUARDIAN_PROPOSAL: u64 = 18;
 
     #[event]
     struct ProposalExecuted has drop, store {
@@ -187,7 +189,10 @@ module dao_factory::anchor {
             };
         } else if (proposal_type == 5) { // NFT Transfer
             let (nft_address, recipient) = ledger::extract_proposal_action_nft(dao_address, proposal_id);
-            let nft_obj = object::address_to_object<object::ObjectCore>(nft_address);
+            // H-02 Defense: Ensure object is a valid NFT and not an internal protocol object or the DAO
+            assert!(nft_address != dao_address, error::invalid_argument(E_INVALID_ACTION));
+            assert!(object::object_exists<token::Token>(nft_address), error::invalid_argument(E_INVALID_ACTION));
+            let nft_obj = object::address_to_object<token::Token>(nft_address);
             object::transfer(&dao_signer, nft_obj, recipient);
         } else if (proposal_type == 7) { // Module Settings
             let (setting_type, target_address, string_bytes, bool_val) = ledger::get_proposal_action_module_setting(dao_address, proposal_id);
@@ -243,6 +248,10 @@ module dao_factory::anchor {
         assert!(std::option::is_some(&guardian_opt), error::invalid_state(E_NO_GUARDIAN_CONFIGURED));
         assert!(signer::address_of(caller) == *std::option::borrow(&guardian_opt), error::permission_denied(E_NOT_GUARDIAN));
 
+        // SECURITY FIX (M-07): A Guardian cannot cancel a proposal to update/remove the Guardian (Type 4)
+        let proposal_type = ledger::get_proposal_type(dao_address, proposal_id);
+        assert!(proposal_type != 4, error::permission_denied(E_CANNOT_CANCEL_GUARDIAN_PROPOSAL));
+
         mark_as_canceled(dao_address, proposal_id);
     }
 
@@ -250,7 +259,7 @@ module dao_factory::anchor {
     // Anyone can cancel a proposal if the proposer's voting power drops below the required threshold.
     // This acts as a decentralized immune system against proposers who lose their community backing.
     public entry fun public_cancel_proposal(_caller: &signer, dao_address: address, proposal_id: u64) {
-        let (proposer, start_time, _, _, _, _, _, _, _) = ledger::get_proposal_details(dao_address, proposal_id);
+        let (proposer, _, _, _, _, _, _, _, _) = ledger::get_proposal_details(dao_address, proposal_id);
         let (_, _, _, proposal_threshold, _, _, _, _) = charter::get_dao_config_view(dao_address);
         let ve_token_addr = ledger::get_proposal_ve_token(dao_address, proposal_id);
         
@@ -261,9 +270,9 @@ module dao_factory::anchor {
         let current_power = if (object::object_exists<legacy::VeToken>(ve_token_addr)) {
             let ve_token_obj = object::address_to_object<legacy::VeToken>(ve_token_addr);
             if (object::is_owner(ve_token_obj, proposer)) {
-                // Check power at the time the proposal was created to avoid natural time decay griefing
-                let start_epoch = start_time / 604800; // Convert timestamp to epoch
-                legacy::get_voting_power_at(ve_token_obj, start_epoch)
+                // Check power at the proposal's snapshot epoch to avoid natural time decay griefing
+                let snapshot_epoch = ledger::get_proposal_snapshot_epoch(dao_address, proposal_id);
+                legacy::get_voting_power_at(ve_token_obj, snapshot_epoch)
             } else {
                 0
             }
@@ -330,7 +339,12 @@ module dao_factory::anchor {
     }
 
     fun validate_and_mark_executed(dao_address: address, proposal_id: u64) {
-        sentinel::assert_not_paused(dao_address);
+        let proposal_type = ledger::get_proposal_type(dao_address, proposal_id);
+        // SECURITY FIX (M-07): Type 4 proposals (Guardian replacement) bypass the paused state
+        // so a rogue guardian cannot freeze the DAO to prevent its own dismissal or force the proposal to expire.
+        if (proposal_type != 4) {
+            sentinel::assert_not_paused(dao_address);
+        };
         assert!(charter::is_active(dao_address), error::invalid_state(E_PROPOSAL_NOT_ACTIVE));
 
         let (_, _, _, eta, executed, canceled, for_votes, against_votes, abstain_votes) = ledger::get_proposal_details(dao_address, proposal_id);

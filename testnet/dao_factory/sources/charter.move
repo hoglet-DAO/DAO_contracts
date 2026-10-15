@@ -107,7 +107,10 @@ module dao_factory::charter {
             grace_period,
             proposal_count: 0, // Starts with 0 proposals
             guardian,
-            is_active: (launcher_address == @0x0),
+            // M-06 Defense: Static DAOs created permissionlessly without a launcher (@0x0)
+            // start inactive (pending approval by the protocol Sentinel/Admin).
+            // Inflationary DAOs created at genesis with mint_ref authority start active.
+            is_active: (launcher_address == @0x0 && is_inflationary),
             launcher_address,
             is_inflationary
         });
@@ -127,6 +130,17 @@ module dao_factory::charter {
     public(friend) fun set_active(launcher_signer: &signer, dao_address: address) acquires DaoConfig {
         let config = borrow_global_mut<DaoConfig>(dao_address);
         assert!(std::signer::address_of(launcher_signer) == config.launcher_address, error::permission_denied(E_UNAUTHORIZED_LAUNCHER));
+        config.is_active = true;
+
+        event::emit(DaoActivated {
+            dao_address,
+            launcher_address: config.launcher_address,
+        });
+    }
+
+    // Function to activate a static DAO via Factory Sentinel / Admin (Called by petra)
+    public(friend) fun set_active_by_factory(dao_address: address) acquires DaoConfig {
+        let config = borrow_global_mut<DaoConfig>(dao_address);
         config.is_active = true;
 
         event::emit(DaoActivated {

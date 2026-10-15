@@ -283,4 +283,61 @@ module dao_boost::boost_registry {
         if (!exists<BoostRegistry>(dao_address)) return 0;
         borrow_global<BoostRegistry>(dao_address).collection_count
     }
+
+    // ============================ TESTS ============================
+
+    #[test(dao = @0x1234)]
+    fun test_boost_lifecycle(dao: &signer) acquires BoostRegistry {
+        assert!(!is_initialized(@0x1234), 1);
+        initialize(dao);
+        assert!(is_initialized(@0x1234), 2);
+
+        set_collection(dao, @0xC011, 500);
+        assert!(is_boosted_collection(@0x1234, @0xC011), 3);
+        assert!(get_collection_boost(@0x1234, @0xC011) == 500, 4);
+        assert!(get_registry_size(@0x1234) == 1, 5);
+
+        // Updating an existing collection keeps the count at 1.
+        set_collection(dao, @0xC011, 800);
+        assert!(get_collection_boost(@0x1234, @0xC011) == 800, 6);
+        assert!(get_registry_size(@0x1234) == 1, 7);
+
+        remove_collection(dao, @0xC011);
+        assert!(!is_boosted_collection(@0x1234, @0xC011), 8);
+        assert!(get_registry_size(@0x1234) == 0, 9);
+    }
+
+    #[test]
+    fun test_hard_cap_constant() {
+        assert!(hard_cap_bps() == 1370, 11);
+    }
+
+    #[test]
+    fun test_uninitialized_views_are_safe() acquires BoostRegistry {
+        assert!(!is_initialized(@0xDEAD), 21);
+        assert!(get_collection_boost(@0xDEAD, @0xC011) == 0, 22);
+        assert!(!is_boosted_collection(@0xDEAD, @0xC011), 23);
+        assert!(get_registry_size(@0xDEAD) == 0, 24);
+    }
+
+    #[test]
+    fun test_compute_boost_without_registry() acquires BoostRegistry {
+        let (bps, valid) = compute_boost(@0xDEAD, @0x1, std::vector::empty<address>());
+        assert!(bps == 0, 31);
+        assert!(std::vector::length(&valid) == 0, 32);
+    }
+
+    #[test(dao = @0x2222)]
+    #[expected_failure]
+    fun test_set_collection_rejects_zero_bps(dao: &signer) acquires BoostRegistry {
+        initialize(dao);
+        set_collection(dao, @0xC022, 0);
+    }
+
+    #[test(dao = @0x3333)]
+    #[expected_failure]
+    fun test_set_collection_rejects_over_cap(dao: &signer) acquires BoostRegistry {
+        initialize(dao);
+        set_collection(dao, @0xC033, 1371); // > HARD_MAX_BOOST_CAP_BPS
+    }
 }

@@ -146,8 +146,8 @@ module dao_factory::witness {
         assert!(!smart_table::contains(prop_votes, ve_addr), error::invalid_state(E_ALREADY_VOTED));
         smart_table::add(prop_votes, ve_addr, true);
 
-        // Calculate voting power in the previous epoch (anti-flash-loan).
-        let check_epoch = if (pilgrim::now() > 0) { pilgrim::now() - 1 } else { 0 };
+        // Calculate voting power at the proposal's snapshot epoch (anti-flash-loan and token recycling fix: M-02).
+        let check_epoch = ledger::get_proposal_snapshot_epoch(dao_address, proposal_id);
         let weight = legacy::get_voting_power_at(ve_token_obj, check_epoch);
         assert!(weight > 0, error::invalid_state(E_ZERO_POWER));
 

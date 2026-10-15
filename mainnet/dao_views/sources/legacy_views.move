@@ -96,4 +96,16 @@ module dao_views::legacy_views {
 
         (valid_nfts, amounts, end_epochs, powers, delegated_flags, out_owners, current_epoch)
     }
+
+    /// Returns total active voting power of a DAO at current epoch.
+    #[view]
+    public fun get_total_voting_power(dao_address: address): u64 {
+        legacy::get_total_voting_power(dao_address)
+    }
+
+    /// Returns total voting power of a DAO at `query_epoch`.
+    #[view]
+    public fun get_total_voting_power_at(dao_address: address, query_epoch: u64): u64 {
+        legacy::get_total_voting_power_at(dao_address, query_epoch)
+    }
 }

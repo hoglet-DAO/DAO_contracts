@@ -17,6 +17,7 @@ module dao_factory::herald {
     use supra_framework::timestamp;
     use supra_framework::event;
     use supra_framework::object;
+    use aptos_token_objects::token;
     use std::error;
     use aptos_std::smart_table::{Self, SmartTable};
     use aptos_std::aptos_hash;
@@ -51,6 +52,8 @@ module dao_factory::herald {
     const E_SCRIPT_NOT_FOUND: u64 = 14;
     const E_STATIC_SCRIPT_HAS_ARGS: u64 = 15;
     const E_PARAMETERIZED_SCRIPT_EMPTY_ARGS: u64 = 16;
+    const E_NOT_AN_NFT: u64 = 17;
+    const E_INVALID_TARGET: u64 = 18;
 
     // Structs 
     struct HeraldState has key {
@@ -113,7 +116,7 @@ module dao_factory::herald {
         legacy_addr: address,
         dao_address: address,
         is_super_quorum: bool
-    ): (address, address, u64, u64, u64, u64) acquires HeraldState {
+    ): (address, address, u64, u64, u64, u64, u64) acquires HeraldState {
         let proposer_addr = signer::address_of(proposer);
 
         assert!(object::is_object(legacy_addr), error::invalid_argument(E_NOT_OBJECT));
@@ -174,19 +177,20 @@ module dao_factory::herald {
         let ve_token_addr = object::object_address(&legacy);
 
         // Calculate dynamic quorum at the exact moment of proposal creation
-        // SECURITY FIX (M11): Use historical total_locked matching the check_epoch to prevent quorum griefing
-        let total_locked = legacy::get_total_locked_at(dao_address, check_epoch);
+        // FIX (audit H-03): Use total voting power (decayed ve-supply) at check_epoch,
+        // so quorum required is evaluated in the exact same units as votes cast (veToken voting power)
+        let total_power = legacy::get_total_voting_power_at(dao_address, check_epoch);
         
         let quorum_required = if (quorum_den == 0) {
             0
         } else if (is_super_quorum) {
-            math::mul_div_u64(total_locked, super_quorum_threshold, quorum_den)
+            math::mul_div_u64(total_power, super_quorum_threshold, quorum_den)
         } else {
-            let default_quorum = math::mul_div_u64(total_locked, quorum_num, quorum_den);
+            let default_quorum = math::mul_div_u64(total_power, quorum_num, quorum_den);
             ledger::get_dynamic_quorum(dao_address, default_quorum)
         };
         
-        (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required)
+        (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required, check_epoch)
     }
 
     public entry fun propose_treasury_transfer(
@@ -199,7 +203,7 @@ module dao_factory::herald {
         recipient: address,
         amount: u64,
     ) acquires HeraldState {
-        let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required) = 
+        let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required, snapshot_epoch) = 
             validate_and_prepare_proposal(proposer, legacy_addr, dao_address, false);
 
         // Create and store the treasury proposal.
@@ -211,6 +215,7 @@ module dao_factory::herald {
             description_hash,
             start_time,
             end_time,
+            snapshot_epoch,
             quorum_required,
             asset_address,
             recipient,
@@ -233,8 +238,12 @@ module dao_factory::herald {
         nft_address: address,
         recipient: address,
     ) acquires HeraldState {
-        let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required) = 
-            validate_and_prepare_proposal(proposer, legacy_addr, dao_address, false);
+        // H-02 Defense: Validate target is a legitimate NFT token and not the DAO or an internal protocol object
+        assert!(nft_address != dao_address, error::invalid_argument(E_INVALID_TARGET));
+        assert!(object::object_exists<token::Token>(nft_address), error::invalid_argument(E_NOT_AN_NFT));
+
+        let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required, snapshot_epoch) = 
+            validate_and_prepare_proposal(proposer, legacy_addr, dao_address, true);
 
         // Create and store the NFT Transfer proposal.
         let new_proposal = ledger::new_nft_proposal(
@@ -245,6 +254,7 @@ module dao_factory::herald {
             description_hash,
             start_time,
             end_time,
+            snapshot_epoch,
             quorum_required,
             nft_address,
             recipient,
@@ -282,7 +292,7 @@ module dao_factory::herald {
             jubilee::assert_valid_emission_param(dao_address, (config_key as u64), config_value);
         };
         // Keys 20-27 are Smart Token parameters and require no extra pre-validation here.
-        let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required) = 
+        let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required, snapshot_epoch) = 
             validate_and_prepare_proposal(proposer, legacy_addr, dao_address, true); // Config changes require super quorum
 
         let new_proposal = ledger::new_config_proposal(
@@ -293,6 +303,7 @@ module dao_factory::herald {
             description_hash,
             start_time,
             end_time,
+            snapshot_epoch,
             quorum_required,
             config_key,
             config_value,
@@ -313,7 +324,7 @@ module dao_factory::herald {
         description_hash: vector<u8>,
         new_guardian: address,
     ) acquires HeraldState {
-        let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required) = 
+        let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required, snapshot_epoch) = 
             validate_and_prepare_proposal(proposer, legacy_addr, dao_address, true); // Guardian changes require super quorum
 
         let new_proposal = ledger::new_guardian_proposal(
@@ -324,6 +335,7 @@ module dao_factory::herald {
             description_hash,
             start_time,
             end_time,
+            snapshot_epoch,
             quorum_required,
             new_guardian,
         );
@@ -346,7 +358,7 @@ module dao_factory::herald {
         gauge_id: u64,
     ) acquires HeraldState {
         assert!(charter::is_inflationary(dao_address), error::invalid_state(E_NOT_INFLATIONARY));
-        let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required) = 
+        let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required, snapshot_epoch) = 
             validate_and_prepare_proposal(proposer, legacy_addr, dao_address, false); // Gauge actions use regular quorum
 
         let new_proposal = ledger::new_gauge_proposal(
@@ -357,6 +369,7 @@ module dao_factory::herald {
             description_hash,
             start_time,
             end_time,
+            snapshot_epoch,
             quorum_required,
             action_type,
             target_address,
@@ -387,7 +400,7 @@ module dao_factory::herald {
             // inflationary DAOs (static DAOs have no BribeRegistry).
             assert!(charter::is_inflationary(dao_address), error::invalid_state(E_NOT_INFLATIONARY));
         };
-        let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required) = 
+        let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required, snapshot_epoch) = 
             validate_and_prepare_proposal(proposer, legacy_addr, dao_address, true);
 
         let new_proposal = ledger::new_module_setting_proposal(
@@ -398,6 +411,7 @@ module dao_factory::herald {
             description_hash,
             start_time,
             end_time,
+            snapshot_epoch,
             quorum_required,
             setting_type,
             target_address,
@@ -450,7 +464,7 @@ module dao_factory::herald {
             );
         };
 
-        let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required) =
+        let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required, snapshot_epoch) =
             validate_and_prepare_proposal(proposer, legacy_addr, dao_address, false); // Regular quorum
 
         let new_proposal = ledger::new_boost_proposal(
@@ -461,6 +475,7 @@ module dao_factory::herald {
             description_hash,
             start_time,
             end_time,
+            snapshot_epoch,
             quorum_required,
             action_type,
             collection_addr,
@@ -515,7 +530,7 @@ module dao_factory::herald {
             assert!(args_commitment == empty_commitment, error::invalid_argument(E_STATIC_SCRIPT_HAS_ARGS));
         };
 
-        let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required) = 
+        let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required, snapshot_epoch) = 
             validate_and_prepare_proposal(proposer, legacy_addr, dao_address, true); // Script proposals require super quorum
 
         let new_proposal = ledger::new_script_proposal(
@@ -526,6 +541,7 @@ module dao_factory::herald {
             description_hash,
             start_time,
             end_time,
+            snapshot_epoch,
             quorum_required,
             execution_hash,
             args_commitment,
@@ -554,7 +570,7 @@ module dao_factory::herald {
     ) acquires HeraldState {
         assert!(library::script_exists(script_id), error::invalid_argument(E_SCRIPT_NOT_FOUND));
 
-        let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required) =
+        let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required, snapshot_epoch) =
             validate_and_prepare_proposal(proposer, legacy_addr, dao_address, true); // super quorum
 
         let new_proposal = ledger::new_script_allow_proposal(
@@ -565,6 +581,7 @@ module dao_factory::herald {
             description_hash,
             start_time,
             end_time,
+            snapshot_epoch,
             quorum_required,
             script_id,
             add,

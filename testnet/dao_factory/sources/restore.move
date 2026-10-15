@@ -14,7 +14,7 @@ module dao_factory::restore {
     use supra_framework::primary_fungible_store;
     use supra_framework::dispatchable_fungible_asset;
 
-    use supra_framework::object::{Self, Object, ExtendRef};
+    use supra_framework::object::{Self, Object, ExtendRef, TransferRef};
     use supra_framework::event;
     use aptos_std::smart_table::{Self, SmartTable};
     use std::error;
@@ -113,6 +113,9 @@ module dao_factory::restore {
 
     public(friend) fun initialize(dao_signer: &signer, governance_token_addr: address, extra_whitelisted_tokens: vector<address>) {
         let constructor_ref = object::create_object(signer::address_of(dao_signer));
+        // H-02 Defense: Disable ungated transfers on Bribe vault object to prevent theft via Type 5 proposals
+        let transfer_ref = object::generate_transfer_ref(&constructor_ref);
+        object::disable_ungated_transfer(&transfer_ref);
         
         let whitelisted = vector::empty<address>();
         if (!vector::contains(&whitelisted, &governance_token_addr)) {
@@ -201,24 +204,27 @@ module dao_factory::restore {
         );
 
         let user_store = primary_fungible_store::primary_store(depositor_addr, token_metadata);
-        // FIX (audit10 C4): route through the DAO's cap ONLY when the DAO has
-        // a TaxFreeRouter AND the bribe token IS the DAO's governance token
+        // FIX (audit10 C4 + H-04): route through the DAO's cap ONLY when the DAO has
+        // a TaxFreeRouter AND the bribe token IS the DAO's governance token.
+        // Requires the depositor's explicit signer proof so no DAO script can drain user wallets.
         let use_cap = use_cap_route(dao_address, token_addr);
         let fa = if (use_cap) {
-            tax_router::withdraw_tax_free(dao_address, &ledger::generate_signer(dao_address), user_store, amount)
+            tax_router::withdraw_tax_free_by_owner(dao_address, depositor, user_store, amount)
         } else {
             dispatchable_fungible_asset::withdraw(depositor, user_store, amount)
         };
 
         let vault_dest = primary_fungible_store::ensure_primary_store_exists(registry.vault_address, fungible_asset::asset_metadata(&fa));
+        let bal_before = primary_fungible_store::balance(registry.vault_address, token_metadata);
         dispatchable_fungible_asset::deposit(vault_dest, fa);
+        let actual_amount = primary_fungible_store::balance(registry.vault_address, token_metadata) - bal_before;
 
         let key = BribeKey { pilgrim, gauge_id, token_addr };
         let current_total = table::u64_or_zero(&registry.total_bribes, key);
-        smart_table::upsert(&mut registry.total_bribes, key, current_total + amount);
+        smart_table::upsert(&mut registry.total_bribes, key, current_total + actual_amount);
 
         event::emit(BribeDeposited {
-            dao_address, depositor: depositor_addr, pilgrim, gauge_id, token: token_addr, amount
+            dao_address, depositor: depositor_addr, pilgrim, gauge_id, token: token_addr, amount: actual_amount
         });
     }
 

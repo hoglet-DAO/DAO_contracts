@@ -5,7 +5,7 @@ module dao_factory::foundry {
     friend dao_factory::anchor;
 
     use std::signer;
-    use supra_framework::object::{Self, Object, ExtendRef};
+    use supra_framework::object::{Self, Object, ExtendRef, TransferRef};
     use supra_framework::fungible_asset::{Self, Metadata, FungibleAsset};
     use supra_framework::primary_fungible_store;
     use supra_framework::dispatchable_fungible_asset;
@@ -117,6 +117,9 @@ module dao_factory::foundry {
         dao_token_addr: address
     ): address {
         let constructor_ref = object::create_object(signer::address_of(dao_signer));
+        // H-02 Defense: Disable ungated transfers on Gauge objects to prevent theft via Type 5 proposals
+        let transfer_ref = object::generate_transfer_ref(&constructor_ref);
+        object::disable_ungated_transfer(&transfer_ref);
         let gauge_signer = object::generate_signer(&constructor_ref);
         let gauge_address = signer::address_of(&gauge_signer);
 
@@ -423,9 +426,20 @@ module dao_factory::foundry {
 
     // Called internally by zeal.move when claim_gauge_emission is executed.
     public(friend) fun notify_reward_amount(gauge_addr: address, fa: FungibleAsset) acquires Gauge {
-        let amount = (fungible_asset::amount(&fa) as u128);
-        if (amount == 0) {
+        let nominal_amount = fungible_asset::amount(&fa);
+        if (nominal_amount == 0) {
             fungible_asset::destroy_zero(fa);
+            return
+        };
+
+        // Measure net tokens received to prevent reward exhaustion if token has transfer fees (M-03)
+        let reward_token = fungible_asset::asset_metadata(&fa);
+        let gauge_dest = primary_fungible_store::ensure_primary_store_exists(gauge_addr, reward_token);
+        let bal_before = primary_fungible_store::balance(gauge_addr, reward_token);
+        dispatchable_fungible_asset::deposit(gauge_dest, fa);
+        let bal_after = primary_fungible_store::balance(gauge_addr, reward_token);
+        let actual_amount = ((bal_after - bal_before) as u128);
+        if (actual_amount == 0) {
             return
         };
 
@@ -435,20 +449,17 @@ module dao_factory::foundry {
         let current_time = timestamp::now_seconds();
         
         if (current_time >= gauge.period_finish) {
-            gauge.reward_rate = amount / (pilgrim::duration() as u128);
+            gauge.reward_rate = actual_amount / (pilgrim::duration() as u128);
         } else {
             let remaining = gauge.period_finish - current_time;
             let leftover = (remaining as u128) * gauge.reward_rate;
-            gauge.reward_rate = (amount + leftover) / (pilgrim::duration() as u128);
+            gauge.reward_rate = (actual_amount + leftover) / (pilgrim::duration() as u128);
         };
 
         gauge.last_update_time = current_time;
         gauge.period_finish = current_time + pilgrim::duration();
 
-        let gauge_dest = primary_fungible_store::ensure_primary_store_exists(gauge_addr, fungible_asset::asset_metadata(&fa));
-        dispatchable_fungible_asset::deposit(gauge_dest, fa);
-
-        event::emit(RewardAdded { gauge_address: gauge_addr, amount: (amount as u64) });
+        event::emit(RewardAdded { gauge_address: gauge_addr, amount: (actual_amount as u64) });
     }
 
     // =========================================================================
