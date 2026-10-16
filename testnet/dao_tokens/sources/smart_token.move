@@ -411,8 +411,8 @@ module dao_tokens::smart_token {
             let metadata = supra_framework::object::address_to_object<Metadata>(token_addr);
             let supply_opt = supra_framework::fungible_asset::supply(metadata);
             if (std::option::is_some(&supply_opt)) {
-                let total_supply = (std::option::extract(&mut supply_opt) as u64);
-                let min_tx_limit = (total_supply * 5) / 1000; // Minimum 0.5% of supply
+                let total_supply = std::option::extract(&mut supply_opt);
+                let min_tx_limit = (((total_supply * 5) / 1000) as u64); // Minimum 0.5% of supply
                 assert!(value >= min_tx_limit || value == 0, error::out_of_range(E_MAX_TX_EXCEEDED));
             };
             config.max_tx_amount = value;
@@ -420,8 +420,8 @@ module dao_tokens::smart_token {
             let metadata = supra_framework::object::address_to_object<Metadata>(token_addr);
             let supply_opt = supra_framework::fungible_asset::supply(metadata);
             if (std::option::is_some(&supply_opt)) {
-                let total_supply = (std::option::extract(&mut supply_opt) as u64);
-                let min_wallet_limit = (total_supply * 10) / 1000; // Minimum 1% of supply
+                let total_supply = std::option::extract(&mut supply_opt);
+                let min_wallet_limit = (((total_supply * 10) / 1000) as u64); // Minimum 1% of supply
                 assert!(value >= min_wallet_limit || value == 0, error::out_of_range(E_MAX_WALLET_EXCEEDED));
             };
             config.max_wallet_amount = value;
@@ -482,6 +482,10 @@ module dao_tokens::smart_token {
         refs.transfer_ref = std::option::some(transfer_ref);
         
         TaxFreeCap { token_addr }
+    }
+
+    public fun cap_token_address(cap: &TaxFreeCap): address {
+        cap.token_addr
     }
 
     /// Executes a tax-free withdraw using the secured TransferRef.

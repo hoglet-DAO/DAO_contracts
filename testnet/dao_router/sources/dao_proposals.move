@@ -34,7 +34,7 @@ module dao_router::dao_proposals {
         amount: u64,
     ) {
         herald::propose_standard(
-            proposer, legacy_addr, dao_address, title, description_hash, false, 1,
+            proposer, legacy_addr, dao_address, title, description_hash, 1,
             vector::empty(), recipient, amount, 0, 0, asset_address, @0x0, asset_address
         );
     }
@@ -52,7 +52,7 @@ module dao_router::dao_proposals {
         assert!(object::object_exists<token::Token>(nft_address), error::invalid_argument(E_NOT_AN_NFT));
 
         herald::propose_standard(
-            proposer, legacy_addr, dao_address, title, description_hash, true, 5,
+            proposer, legacy_addr, dao_address, title, description_hash, 5,
             vector::empty(), recipient, 1, 0, 0, nft_address, nft_address, @0x0
         );
     }
@@ -81,7 +81,7 @@ module dao_router::dao_proposals {
         };
 
         herald::propose_standard(
-            proposer, legacy_addr, dao_address, title, description_hash, true, 2,
+            proposer, legacy_addr, dao_address, title, description_hash, 2,
             vector::empty(), @0x0, 0, config_key, config_value, @0x0, @0x0, @0x0
         );
     }
@@ -95,7 +95,7 @@ module dao_router::dao_proposals {
         new_guardian: address,
     ) {
         herald::propose_standard(
-            proposer, legacy_addr, dao_address, title, description_hash, true, 4,
+            proposer, legacy_addr, dao_address, title, description_hash, 4,
             vector::empty(), @0x0, 0, 0, 0, new_guardian, new_guardian, @0x0
         );
     }
@@ -113,7 +113,7 @@ module dao_router::dao_proposals {
         assert!(charter::is_inflationary(dao_address), error::invalid_state(E_NOT_INFLATIONARY));
 
         herald::propose_standard(
-            proposer, legacy_addr, dao_address, title, description_hash, false, 3,
+            proposer, legacy_addr, dao_address, title, description_hash, 3,
             vector::empty(), @0x0, 0, action_type, gauge_id, target_address, target_address, @0x0
         );
     }
@@ -135,7 +135,7 @@ module dao_router::dao_proposals {
         };
 
         herald::propose_standard(
-            proposer, legacy_addr, dao_address, title, description_hash, true, 6,
+            proposer, legacy_addr, dao_address, title, description_hash, 6,
             *std::string::bytes(&string_value), @0x0, 0, setting_type, if (bool_value) 1 else 0,
             target_address, target_address, @0x0
         );
@@ -162,7 +162,7 @@ module dao_router::dao_proposals {
         };
 
         herald::propose_standard(
-            proposer, legacy_addr, dao_address, title, description_hash, false, 7,
+            proposer, legacy_addr, dao_address, title, description_hash, 7,
             vector::empty(), @0x0, 0, action_type, boost_bps, collection_addr, collection_addr, @0x0
         );
     }
@@ -179,7 +179,7 @@ module dao_router::dao_proposals {
         assert!(library::script_exists(script_id), error::invalid_argument(E_SCRIPT_NOT_FOUND));
 
         herald::propose_standard(
-            proposer, legacy_addr, dao_address, title, description_hash, true, 9,
+            proposer, legacy_addr, dao_address, title, description_hash, 9,
             vector::empty(), @0x0, script_id, 0, if (add) 1 else 0, @0x0, @0x0, @0x0
         );
     }

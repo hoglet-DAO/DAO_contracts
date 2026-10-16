@@ -204,7 +204,6 @@ module dao_factory::herald {
         dao_address: address,
         title: String,
         description_hash: vector<u8>,
-        is_super_quorum: bool,
         proposal_type: u8,
         proposal_data: vector<u8>,
         action_recipient: address,
@@ -220,6 +219,10 @@ module dao_factory::herald {
             proposal_type == 4 || proposal_type == 5 || proposal_type == 6 ||
             proposal_type == 7 || proposal_type == 9,
             error::invalid_argument(E_INVALID_ACTION_TYPE)
+        );
+        let is_super_quorum = (
+            proposal_type == 2 || proposal_type == 4 || proposal_type == 5 ||
+            proposal_type == 6 || proposal_type == 9
         );
         create_proposal_internal(
             proposer, legacy_addr, dao_address, title, description_hash, is_super_quorum, proposal_type,

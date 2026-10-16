@@ -267,7 +267,7 @@ module dao_factory::legacy {
         // to the treasury keeps acc_rebase_per_share hard at 0, so the rebase
         // withdrawal in compound_rebase_internal is unreachable for them
         // (pending is always 0). Smart-token DAOs are unaffected.
-        if (registry.total_locked > 0 && amount > 0 && tax_router::has_tax_free_router(dao_address)) {
+        if (registry.total_locked > 0 && amount > 0) {
             registry.acc_rebase_per_share = math::add_per_share(amount, registry.total_locked, registry.acc_rebase_per_share);
             // [FIX (AUDIT13 #1)] Route through the DAO's TaxFreeCap instead of
             // the raw dispatchable deposit: the deposit hook would skim
