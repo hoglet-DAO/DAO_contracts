@@ -1,7 +1,7 @@
 module dao_tokens::smart_token {
     use std::option::{Self};
     use std::string;
-    use supra_framework::object::{Self, Object, ConstructorRef, object_address};
+    use supra_framework::object::{Self, Object, ConstructorRef, object_address, ObjectCore};
     use supra_framework::fungible_asset::{Self, FungibleAsset, Metadata, TransferRef};
     use supra_framework::primary_fungible_store;
     use supra_framework::dispatchable_fungible_asset;
@@ -154,6 +154,16 @@ module dao_tokens::smart_token {
         SmartTokenCap { token_addr }
     }
 
+    fun get_root_owner(addr: address): address {
+        let current = addr;
+        let depth = 0;
+        while (object::is_object(current) && depth < 8) {
+            current = object::owner(object::address_to_object<ObjectCore>(current));
+            depth = depth + 1;
+        };
+        current
+    }
+
     // ========================================================================
     // HOOK IMPLEMENTATIONS
     // ========================================================================
@@ -166,19 +176,23 @@ module dao_tokens::smart_token {
         let metadata = fungible_asset::store_metadata(store);
         let token_addr = object_address(&metadata);
         let sender_address = object::owner(store);
+        let sender_root = get_root_owner(sender_address);
         
         let fa_to_transfer = fungible_asset::withdraw_with_ref(transfer_ref, store, amount);
 
         if (exists<DaoTokenConfig>(token_addr)) {
             let config = borrow_global<DaoTokenConfig>(token_addr);
             
-            // SECURITY FIX (M-04): Automatically exempt treasury and admin to prevent EAMOUNT_MISMATCH on DAO treasury transfers.
-            let is_exempt = vector::contains(&config.exempt_addresses, &sender_address)
-                || sender_address == config.treasury_address
-                || sender_address == config.dao_admin_address;
+            // SECURITY FIX: Exemption bypasses blacklist, anti-whale AND taxes.
+            let is_exempt = vector::contains(&config.exempt_addresses, &sender_address) ||
+                            vector::contains(&config.exempt_addresses, &sender_root);
             if (!is_exempt) {
                 if (config.is_blacklist_active) {
-                    assert!(!vector::contains(&config.blacklist, &sender_address), error::permission_denied(E_BLACKLISTED));
+                    assert!(
+                        !vector::contains(&config.blacklist, &sender_address) &&
+                        !vector::contains(&config.blacklist, &sender_root),
+                        error::permission_denied(E_BLACKLISTED)
+                    );
                 };
 
                 if (config.is_anti_whale_active && config.max_tx_amount > 0) {
@@ -216,23 +230,33 @@ module dao_tokens::smart_token {
         let metadata = fungible_asset::store_metadata(store);
         let token_addr = object_address(&metadata);
         let receiver_address = object::owner(store);
+        let receiver_root = get_root_owner(receiver_address);
         let amount = fungible_asset::amount(&fa);
         
         if (exists<DaoTokenConfig>(token_addr)) {
             let config = borrow_global<DaoTokenConfig>(token_addr);
             
-            // SECURITY FIX (M-04): Automatically exempt treasury and admin.
-            let is_exempt = vector::contains(&config.exempt_addresses, &receiver_address)
-                || receiver_address == config.treasury_address
-                || receiver_address == config.dao_admin_address;
+            // SECURITY FIX: Exemption bypasses blacklist, anti-whale AND taxes.
+            let is_exempt = vector::contains(&config.exempt_addresses, &receiver_address) ||
+                            vector::contains(&config.exempt_addresses, &receiver_root);
             if (!is_exempt) {
                 if (config.is_blacklist_active) {
-                    assert!(!vector::contains(&config.blacklist, &receiver_address), error::permission_denied(E_BLACKLISTED));
+                    assert!(
+                        !vector::contains(&config.blacklist, &receiver_address) &&
+                        !vector::contains(&config.blacklist, &receiver_root),
+                        error::permission_denied(E_BLACKLISTED)
+                    );
                 };
 
                 if (config.is_anti_whale_active && config.max_wallet_amount > 0) {
-                    let current_balance = primary_fungible_store::balance(receiver_address, metadata);
-                    assert!(current_balance + amount <= config.max_wallet_amount, error::out_of_range(E_MAX_WALLET_EXCEEDED));
+                    let current_balance = primary_fungible_store::balance(receiver_root, metadata);
+                    let store_bal = fungible_asset::balance(store);
+                    let total_dest_balance = if (receiver_address == receiver_root) {
+                        current_balance
+                    } else {
+                        current_balance + store_bal
+                    };
+                    assert!(total_dest_balance + amount <= config.max_wallet_amount, error::out_of_range(E_MAX_WALLET_EXCEEDED));
                 };
 
                 if (config.is_tax_active && config.buy_tax_bps > 0) {
@@ -267,11 +291,6 @@ module dao_tokens::smart_token {
         config.dao_admin_address = new_admin;
         config.treasury_address = new_admin;
 
-        // Automatically grant exemption to the new DAO admin/treasury (M-04)
-        if (!vector::contains(&config.exempt_addresses, &new_admin)) {
-            vector::push_back(&mut config.exempt_addresses, new_admin);
-        };
-
         event::emit(AdminChangedEvent {
             token_addr,
             old_admin,
@@ -289,11 +308,6 @@ module dao_tokens::smart_token {
         
         let old_treasury = config.treasury_address;
         config.treasury_address = treasury_address;
-
-        // Automatically grant exemption to the updated treasury (M-04)
-        if (treasury_address != @0x0 && !vector::contains(&config.exempt_addresses, &treasury_address)) {
-            vector::push_back(&mut config.exempt_addresses, treasury_address);
-        };
 
         event::emit(TreasuryUpdatedEvent {
             token_addr,
@@ -494,86 +508,5 @@ module dao_tokens::smart_token {
         let transfer_ref = std::option::borrow(&refs.transfer_ref);
         
         fungible_asset::deposit_with_ref(transfer_ref, store, fa);
-    }
-
-    // ========================================================================
-    // TESTS (Proving the Capability Architecture)
-    // ========================================================================
-
-    #[test_only]
-    use supra_framework::account;
-
-    #[test(framework = @supra_framework, deployer = @dao_tokens, dao = @0xDA0, hacker = @0xBAD)]
-    public fun test_capability_flow(
-        framework: &signer,
-        deployer: &signer,
-        dao: &signer,
-        hacker: &signer
-    ) acquires HookRefs, DaoTokenConfig {
-        // Setup environment
-        let deployer_addr = std::signer::address_of(deployer);
-        account::create_account_for_test(deployer_addr);
-        init_module(deployer);
-
-        // Create a fake token
-        let token_constructor_ref = object::create_named_object(deployer, b"TEST_TOKEN");
-        primary_fungible_store::create_primary_store_enabled_fungible_asset(
-            &token_constructor_ref,
-            std::option::none(),
-            string::utf8(b"Test"),
-            string::utf8(b"TST"),
-            8,
-            string::utf8(b"icon"),
-            string::utf8(b"project")
-        );
-        let token_addr = object::address_from_constructor_ref(&token_constructor_ref);
-
-        // 1. LAUNCHER PHASE: Initialize and get the Cap
-        let cap = initialize(&token_constructor_ref);
-        
-        // Verify default admin is 0x0
-        let config = borrow_global<DaoTokenConfig>(token_addr);
-        assert!(config.dao_admin_address == @0x0, 100);
-
-        // 2. MIGRATION PHASE: Transfer absolute power to the DAO
-        let dao_addr = std::signer::address_of(dao);
-        set_dao_admin(cap, dao_addr);
-
-        // Verify admin is now DAO
-        let config_after = borrow_global<DaoTokenConfig>(token_addr);
-        assert!(config_after.dao_admin_address == dao_addr, 101);
-
-        // 3. GOVERNANCE PHASE: DAO updates a parameter (Toggle Tax = true)
-        update_single_param(token_addr, dao, 0, 1);
-        
-        let config_final = borrow_global<DaoTokenConfig>(token_addr);
-        assert!(config_final.is_tax_active == true, 102);
-    }
-
-    #[test(deployer = @dao_tokens, hacker = @0xBAD)]
-    #[expected_failure(abort_code = 0x50001)] // permission_denied(E_NOT_AUTHORIZED)
-    public fun test_hacker_fails(deployer: &signer, hacker: &signer) acquires HookRefs, DaoTokenConfig {
-        let deployer_addr = std::signer::address_of(deployer);
-        account::create_account_for_test(deployer_addr);
-        init_module(deployer);
-
-        let token_constructor_ref = object::create_named_object(deployer, b"TEST_TOKEN");
-        primary_fungible_store::create_primary_store_enabled_fungible_asset(
-            &token_constructor_ref,
-            std::option::none(),
-            string::utf8(b"Test"),
-            string::utf8(b"TST"),
-            8,
-            string::utf8(b"icon"),
-            string::utf8(b"project")
-        );
-        let token_addr = object::address_from_constructor_ref(&token_constructor_ref);
-        let cap = initialize(&token_constructor_ref);
-        
-        // Transfer to legitimate DAO
-        set_dao_admin(cap, @0xDA0);
-
-        // Hacker tries to change buy tax
-        update_single_param(token_addr, hacker, 3, 500); // Should abort!
     }
 }

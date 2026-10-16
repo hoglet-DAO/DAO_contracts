@@ -5,12 +5,11 @@ module dao_factory::foundry {
     friend dao_factory::anchor;
 
     use std::signer;
-    use supra_framework::object::{Self, Object, ExtendRef, TransferRef};
+    use supra_framework::object::{Self, Object, ExtendRef};
     use supra_framework::fungible_asset::{Self, Metadata, FungibleAsset};
     use supra_framework::primary_fungible_store;
     use supra_framework::dispatchable_fungible_asset;
     use aptos_std::smart_table::{Self, SmartTable};
-    use aptos_std::math128;
     use supra_framework::timestamp;
     use std::error;
     use supra_framework::event;
@@ -69,11 +68,6 @@ module dao_factory::foundry {
     }
 
     // Events
-    #[event]
-    struct GaugeCreated has drop, store {
-        gauge_address: address,
-        staking_token: address,
-    }
 
     #[event]
     struct Staked has drop, store {
@@ -143,8 +137,6 @@ module dao_factory::foundry {
             working_balances: smart_table::new(),
             user_boosts: smart_table::new(),
         });
-
-        event::emit(GaugeCreated { gauge_address, staking_token: staking_token_addr });
         gauge_address
     }
 
@@ -154,23 +146,15 @@ module dao_factory::foundry {
     // Single source for the reward math, shared by update_reward (which
     // persists it), earned (view) and reward_per_token (view).
     fun current_reward_per_token(gauge: &Gauge): u128 {
-        let current_time = timestamp::now_seconds();
-        let last_time_reward_applicable = if (current_time < gauge.period_finish) {
-            current_time
-        } else {
-            gauge.period_finish
-        };
-
-        if (gauge.working_supply == 0) {
-            return gauge.reward_per_token_stored
-        };
-
-        let time_delta = ((last_time_reward_applicable - gauge.last_update_time) as u128);
-        // We multiply time_delta * REWARD_SCALE first (which is around 6e23, safely inside u128).
-        // Then math128::mul_div handles the multiplication with gauge.reward_rate using u256 internally.
-        // This prevents u128 overflow even if the DAO token has 18 decimals and massive inflation!
-        let reward_increment = math128::mul_div(time_delta * REWARD_SCALE, gauge.reward_rate, gauge.working_supply);
-        gauge.reward_per_token_stored + reward_increment
+        math::calculate_reward_per_token(
+            gauge.reward_per_token_stored,
+            gauge.last_update_time,
+            gauge.period_finish,
+            timestamp::now_seconds(),
+            gauge.reward_rate,
+            gauge.working_supply,
+            REWARD_SCALE,
+        )
     }
 
     fun update_reward(gauge: &mut Gauge, account: address) {
@@ -185,12 +169,10 @@ module dao_factory::foundry {
         // Update user
         if (account != @0x0) {
             let balance = get_working_balance(gauge, account);
-
             let user_paid = table::u128_or_zero(&gauge.user_reward_per_token_paid, account);
             let current_reward = table::u128_or_zero(&gauge.rewards, account);
-
-            let earned = math128::mul_div(balance, gauge.reward_per_token_stored - user_paid, REWARD_SCALE);
-            smart_table::upsert(&mut gauge.rewards, account, current_reward + earned);
+            let total_rewards = math::calculate_user_earned_rewards(gauge.reward_per_token_stored, user_paid, balance, current_reward, REWARD_SCALE);
+            smart_table::upsert(&mut gauge.rewards, account, total_rewards);
             smart_table::upsert(&mut gauge.user_reward_per_token_paid, account, gauge.reward_per_token_stored);
         }
     }
@@ -419,7 +401,7 @@ module dao_factory::foundry {
     // stored boost against the current registry. Heals boosts of inactive
     // users when governance removes or re-prices a collection (escrowed NFTs
     // of removed collections are automatically returned to their owner).
-    public entry fun sync_boost(_caller: &signer, gauge_addr: address, user: address) acquires Gauge {
+    public entry fun sync_boost(gauge_addr: address, user: address) acquires Gauge {
         let gauge = borrow_global_mut<Gauge>(gauge_addr);
         resync_user_boost(gauge_addr, gauge, user);
     }
@@ -482,16 +464,12 @@ module dao_factory::foundry {
     public fun earned(gauge_addr: address, account: address): u64 acquires Gauge {
         if (!exists<Gauge>(gauge_addr)) return 0;
         let gauge = borrow_global<Gauge>(gauge_addr);
-
         let current_reward_per_token_stored = current_reward_per_token(gauge);
-
         let balance = get_working_balance(gauge, account);
-
         let user_paid = table::u128_or_zero(&gauge.user_reward_per_token_paid, account);
         let current_reward = table::u128_or_zero(&gauge.rewards, account);
-
-        let newly_earned = math128::mul_div(balance, current_reward_per_token_stored - user_paid, REWARD_SCALE);
-        (current_reward + newly_earned as u64)
+        let total_rewards = math::calculate_user_earned_rewards(current_reward_per_token_stored, user_paid, balance, current_reward, REWARD_SCALE);
+        (total_rewards as u64)
     }
 
     #[view]

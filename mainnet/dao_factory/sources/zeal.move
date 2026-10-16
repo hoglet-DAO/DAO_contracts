@@ -12,7 +12,7 @@ module dao_factory::zeal {
     use supra_framework::fungible_asset::{Self, FungibleAsset, Metadata};
     use supra_framework::primary_fungible_store;
     use supra_framework::dispatchable_fungible_asset;
-    use supra_framework::object::{Self, ExtendRef, TransferRef};
+    use supra_framework::object::{Self, ExtendRef};
 
     use supra_framework::event;
     use std::error;
@@ -134,6 +134,7 @@ module dao_factory::zeal {
         staking_tokens: vector<address>,
     ) acquires GaugeRegistry {
         let constructor_ref = object::create_object(signer::address_of(dao_signer));
+        let vault_address = object::address_from_constructor_ref(&constructor_ref);
         // H-02 Defense: Disable ungated transfers on Zeal vault object to prevent theft via Type 5 proposals
         let transfer_ref = object::generate_transfer_ref(&constructor_ref);
         object::disable_ungated_transfer(&transfer_ref);
@@ -145,7 +146,7 @@ module dao_factory::zeal {
             epoch_total_votes: smart_table::new(),
             epoch_user_votes: smart_table::new(),
             vault_extend_ref: object::generate_extend_ref(&constructor_ref),
-            vault_address: object::address_from_constructor_ref(&constructor_ref),
+            vault_address,
             epoch_total_emissions: smart_table::new(),
             claimed_emissions: smart_table::new(),
             default_destination,
@@ -312,12 +313,14 @@ module dao_factory::zeal {
         let gauge_votes_table = smart_table::borrow_mut(&mut registry.epoch_gauge_votes, current_epoch);
 
         let user_powers = vector::empty<u128>();
+        let total_allocated_power: u128 = 0;
 
         i = 0;
         while (i < len) {
             let gid = *vector::borrow(&gauge_ids, i);
             let w = (*vector::borrow(&weights, i) as u128);
             let allocated_power = (power * w) / total_weight;
+            total_allocated_power = total_allocated_power + allocated_power;
             
             vector::push_back(&mut user_powers, allocated_power);
 
@@ -333,9 +336,9 @@ module dao_factory::zeal {
             powers: user_powers,
         });
 
-        // Add to the global total of the epoch
+        // Add to the global total of the epoch (exact sum of allocated powers to prevent rounding dust)
         let current_total = table::u128_or_zero(&registry.epoch_total_votes, current_epoch);
-        smart_table::upsert(&mut registry.epoch_total_votes, current_epoch, current_total + power);
+        smart_table::upsert(&mut registry.epoch_total_votes, current_epoch, current_total + total_allocated_power);
 
         // Record the epoch in which this veToken voted to prevent double-voting via merge
         legacy::set_last_voted_epoch(ve_token_obj, current_epoch);
@@ -381,25 +384,17 @@ module dao_factory::zeal {
 
     // Pull Architecture: Anyone can call this to push a gauge's share of emissions to its destination
     public entry fun claim_gauge_emission(
-        _caller: &signer,
         dao_address: address,
         target_epoch: u64,
         gauge_id: u64,
-        token_metadata_addr: address,
     ) acquires GaugeRegistry {
         assert!(target_epoch < pilgrim::now(), error::invalid_argument(E_INVALID_EPOCH));
-        assert!(object::is_object(token_metadata_addr), error::invalid_argument(E_NOT_OBJECT));
 
         // SECURITY FIX (VULN-01): The emissions vault only ever holds the DAO's
         // governance token (deposited by jubilee). Derive the expected token
-        // internally instead of trusting the caller-supplied metadata address,
-        // otherwise an attacker could pass a worthless token, get it forwarded
-        // to the gauge via notify_reward_amount, mark the epoch as claimed and
-        // permanently strand the real emissions in the vault.
+        // internally instead of trusting a caller-supplied metadata address.
         let dao_token_address = legacy::get_token_metadata_address(dao_address);
-        assert!(token_metadata_addr == dao_token_address, error::invalid_argument(E_INVALID_TOKEN));
-
-        let token_metadata = object::address_to_object<Metadata>(token_metadata_addr);
+        let token_metadata = object::address_to_object<Metadata>(dao_token_address);
 
         let registry = borrow_global_mut<GaugeRegistry>(dao_address);
         assert!(smart_table::contains(&registry.gauges, gauge_id), error::invalid_argument(E_INVALID_GAUGE));

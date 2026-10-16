@@ -1,10 +1,10 @@
-/// Boost router one door to apply or release Gauge boosts that involve
-/// legacy V1 NFTs.
-///
-/// Formerly `legacy_boost_router`. Handles the wrap/unwrap lifecycle so a
-/// holder of V1 tokens gets the same 1-click UX as a 0x4-native holder:
-/// the DAO's `foundry::apply_boost` only accepts 0x4 Tokens, so V1 collections
-/// must be wrapped on the way in and unwrapped on the way out.
+// Boost router one door to apply or release Gauge boosts that involve
+// legacy V1 NFTs.
+//
+// Formerly `legacy_boost_router`. Handles the wrap/unwrap lifecycle so a
+// holder of V1 tokens gets the same 1-click UX as a 0x4-native holder:
+// the DAO's `foundry::apply_boost` only accepts 0x4 Tokens, so V1 collections
+// must be wrapped on the way in and unwrapped on the way out.
 module dao_router::dao_boost {
     use std::signer;
     use std::string::String;
@@ -18,12 +18,12 @@ module dao_router::dao_boost {
     const E_VECTOR_LENGTH_MISMATCH: u64 = 1;
     const E_EMPTY_INPUT: u64 = 2;
 
-    /// Wraps V1 NFTs into 0x4 Objects and immediately applies them for a Gauge
-    /// boost, in one transaction.
-    ///
-    /// The four vectors are parallel: index `i` describes one V1 token. All
-    /// lengths must match or the call aborts (no partial state  Move reverts
-    /// the whole transaction).
+    // Wraps V1 NFTs into 0x4 Objects and immediately applies them for a Gauge
+    // boost, in one transaction.
+    //
+    // The four vectors are parallel: index `i` describes one V1 token. All
+    // lengths must match or the call aborts (no partial state  Move reverts
+    // the whole transaction).
     public entry fun wrap_and_boost(
         user: &signer,
         gauge_addr: address,
@@ -66,14 +66,14 @@ module dao_router::dao_boost {
         foundry::apply_boost(user, gauge_addr, v2_addrs);
     }
 
-    /// Releases a boost and unwraps every returned 0x4 Object back into its
-    /// original V1 NFT.
-    ///
-    /// The escrowed set is read from the gauge itself
-    /// (`foundry::get_user_boost_nfts`) immediately before releasing, so the
-    /// unwrap can never drift from what `unboost` actually returns  including
-    /// NFTs re-priced or auto-returned by `foundry::sync_boost`. Callers never
-    /// supply the list, so it cannot be wrong.
+    // Releases a boost and unwraps every returned 0x4 Object back into its
+    // original V1 NFT.
+    //
+    // The escrowed set is read from the gauge itself
+    // (`foundry::get_user_boost_nfts`) immediately before releasing, so the
+    // unwrap can never drift from what `unboost` actually returns  including
+    // NFTs re-priced or auto-returned by `foundry::sync_boost`. Callers never
+    // supply the list, so it cannot be wrong.
     public entry fun unboost_and_unwrap(
         user: &signer,
         gauge_addr: address,

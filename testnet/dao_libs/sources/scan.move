@@ -15,24 +15,24 @@ module dao_libs::scan {
     use aptos_std::smart_table::{Self, SmartTable};
     use dao_libs::math;
 
-    /// Voting-power snapshot of a veToken at a given epoch.
-    /// Same fields and abilities (copy, drop, store) as the original private
-    /// struct in legacy.move, so storage semantics are unchanged.
+    // Voting-power snapshot of a veToken at a given epoch.
+    // Same fields and abilities (copy, drop, store) as the original private
+    // struct in legacy.move, so storage semantics are unchanged.
     struct Snapshot has copy, drop, store {
         pilgrim: u64,
         locked_amount: u64,
         end_epoch: u64,
     }
 
-    /// Snapshot of a DAO registry's total locked amount and total voting power at a given epoch.
+    // Snapshot of a DAO registry's total locked amount and total voting power at a given epoch.
     struct RegistrySnapshot has copy, drop, store {
         pilgrim: u64,
         total_locked: u64,
         total_voting_power: u64,
     }
 
-    /// Public constructor for Snapshot (struct literals are restricted to
-    /// the defining module).
+    // Public constructor for Snapshot (struct literals are restricted to
+    // the defining module).
     public fun new_snapshot(pilgrim: u64, locked_amount: u64, end_epoch: u64): Snapshot {
         Snapshot {
             pilgrim: pilgrim,
@@ -41,11 +41,11 @@ module dao_libs::scan {
         }
     }
 
-    /// Voting power of a lock at `query_epoch`.
-    ///
-    /// `locked_amount` / `end_epoch` are the veToken's CURRENT values and are
-    /// used as fallback when no snapshot qualifies (original semantics of
-    /// legacy::get_voting_power_at).
+    // Voting power of a lock at `query_epoch`.
+    //
+    // `locked_amount` / `end_epoch` are the veToken's CURRENT values and are
+    // used as fallback when no snapshot qualifies (original semantics of
+    // legacy::get_voting_power_at).
     public fun voting_power_at(
         snapshots: &SmartVector<Snapshot>,
         locked_amount: u64,
@@ -83,10 +83,10 @@ module dao_libs::scan {
         (((snap_amount as u128) * (epochs_left as u128) / (max_lock_epochs as u128)) as u64)
     }
 
-    /// Total locked of a DAO at `query_epoch`.
-    ///
-    /// Returns 0 when there is no history or the query predates the first
-    /// snapshot (original semantics of legacy::get_total_locked_at).
+    // Total locked of a DAO at `query_epoch`.
+    //
+    // Returns 0 when there is no history or the query predates the first
+    // snapshot (original semantics of legacy::get_total_locked_at).
     public fun total_locked_at(snapshots: &SmartVector<RegistrySnapshot>, query_epoch: u64): u64 {
         let len = smart_vector::length(snapshots);
         if (len == 0) return 0;
@@ -105,9 +105,9 @@ module dao_libs::scan {
         0
     }
 
-    /// Total voting power of a DAO at `query_epoch`.
-    ///
-    /// Returns 0 when there is no history or the query predates the first snapshot.
+    // Total voting power of a DAO at `query_epoch`.
+    //
+    // Returns 0 when there is no history or the query predates the first snapshot.
     public fun total_voting_power_at(snapshots: &SmartVector<RegistrySnapshot>, query_epoch: u64): u64 {
         let len = smart_vector::length(snapshots);
         if (len == 0) return 0;
@@ -126,9 +126,9 @@ module dao_libs::scan {
         0
     }
 
-    /// Upserts the voting-power snapshot for `epoch`: updates the last
-    /// snapshot if it belongs to this epoch, otherwise appends a new one.
-    /// (Extracted from legacy::upsert_snapshot.)
+    // Upserts the voting-power snapshot for `epoch`: updates the last
+    // snapshot if it belongs to this epoch, otherwise appends a new one.
+    // (Extracted from legacy::upsert_snapshot.)
     public fun upsert_snapshot(
         snapshots: &mut SmartVector<Snapshot>,
         epoch: u64,
@@ -149,8 +149,8 @@ module dao_libs::scan {
         };
     }
 
-    /// Same upsert for the registry's total-locked and total-voting-power history.
-    /// (Extracted from legacy::update_total_locked_history.)
+    // Same upsert for the registry's total-locked and total-voting-power history.
+    // (Extracted from legacy::update_total_locked_history.)
     public fun upsert_registry_snapshot(
         snapshots: &mut SmartVector<RegistrySnapshot>,
         epoch: u64,
@@ -171,8 +171,8 @@ module dao_libs::scan {
         };
     }
 
-    /// Drains and destroys a snapshots vector (extracted from
-    /// legacy::destroy_snapshots).
+    // Drains and destroys a snapshots vector (extracted from
+    // legacy::destroy_snapshots).
     public fun destroy_all<T: drop>(snapshots: SmartVector<T>) {
         let len = smart_vector::length(&snapshots);
         let i = 0;
@@ -183,19 +183,19 @@ module dao_libs::scan {
         smart_vector::destroy_empty(snapshots);
     }
 
-    /// Calculates a lock's weekly decay slope: amount / max_lock_epochs (floored at 1 if amount > 0).
+    // Calculates a lock's weekly decay slope: amount / max_lock_epochs (floored at 1 if amount > 0).
     public fun calculate_lock_slope(amount: u64, max_lock_epochs: u64): u64 {
         let slope = math::mul_div_u64(amount, 1, max_lock_epochs);
         if (amount > 0 && slope == 0) { 1 } else { slope }
     }
 
-    /// Calculates a lock's voting power at a given remaining epochs duration.
+    // Calculates a lock's voting power at a given remaining epochs duration.
     public fun calculate_lock_power(amount: u64, epochs_left: u64, max_lock_epochs: u64): u64 {
         math::mul_div_u64(amount, epochs_left, max_lock_epochs)
     }
 
-    /// Advances bias and slope from `from_epoch` up to `target_epoch`, applying scheduled slope changes.
-    /// Returns (new_epoch, new_bias, new_slope).
+    // Advances bias and slope from `from_epoch` up to `target_epoch`, applying scheduled slope changes.
+    // Returns (new_epoch, new_bias, new_slope).
     public fun advance_ve_decay(
         from_epoch: u64,
         bias: u64,
@@ -223,8 +223,8 @@ module dao_libs::scan {
         (e, bias, slope)
     }
 
-    /// Simulates decayed voting power at `query_epoch` given starting epoch, bias, slope,
-    /// and scheduled slope changes.
+    // Simulates decayed voting power at `query_epoch` given starting epoch, bias, slope,
+    // and scheduled slope changes.
     public fun simulate_decay_power(
         from_epoch: u64,
         bias: u64,
@@ -239,7 +239,7 @@ module dao_libs::scan {
         final_bias
     }
 
-    /// Adds a slope delta scheduled to expire at `epoch`.
+    // Adds a slope delta scheduled to expire at `epoch`.
     public fun add_slope_change(
         slope_changes: &mut SmartTable<u64, u64>,
         epoch: u64,
@@ -253,7 +253,7 @@ module dao_libs::scan {
         };
     }
 
-    /// Removes or decrements a slope delta scheduled to expire at `epoch`.
+    // Removes or decrements a slope delta scheduled to expire at `epoch`.
     public fun sub_slope_change(
         slope_changes: &mut SmartTable<u64, u64>,
         epoch: u64,
@@ -267,5 +267,121 @@ module dao_libs::scan {
                 smart_table::remove(slope_changes, epoch);
             };
         };
+    }
+
+    // Advances the global ve-supply decay to current_epoch
+    public fun checkpoint_supply(
+        last_epoch: &mut u64,
+        last_bias: &mut u64,
+        last_slope: &mut u64,
+        slope_changes: &SmartTable<u64, u64>,
+        current_epoch: u64,
+    ) {
+        if (*last_epoch == 0) {
+            *last_epoch = current_epoch;
+            return
+        };
+        if (current_epoch <= *last_epoch) {
+            return
+        };
+
+        let (new_epoch, new_bias, new_slope) = advance_ve_decay(
+            *last_epoch,
+            *last_bias,
+            *last_slope,
+            slope_changes,
+            current_epoch,
+        );
+
+        *last_epoch = new_epoch;
+        *last_bias = new_bias;
+        *last_slope = new_slope;
+    }
+
+    // Records a brand-new lock into global ve-supply
+    public fun record_new_lock(
+        last_epoch: &mut u64,
+        last_bias: &mut u64,
+        last_slope: &mut u64,
+        slope_changes: &mut SmartTable<u64, u64>,
+        amount: u64,
+        end_epoch: u64,
+        current_epoch: u64,
+        max_lock_epochs: u64,
+    ) {
+        checkpoint_supply(last_epoch, last_bias, last_slope, slope_changes, current_epoch);
+        if (amount == 0 || end_epoch <= current_epoch) return;
+
+        let lock_epochs = end_epoch - current_epoch;
+        let power = calculate_lock_power(amount, lock_epochs, max_lock_epochs);
+        let slope = calculate_lock_slope(amount, max_lock_epochs);
+
+        *last_bias = *last_bias + power;
+        *last_slope = *last_slope + slope;
+
+        add_slope_change(slope_changes, end_epoch, slope);
+    }
+
+    // Updates global ve-supply when a lock's amount and/or duration changes
+    public fun record_lock_delta(
+        last_epoch: &mut u64,
+        last_bias: &mut u64,
+        last_slope: &mut u64,
+        slope_changes: &mut SmartTable<u64, u64>,
+        old_amount: u64,
+        old_end: u64,
+        new_amount: u64,
+        new_end: u64,
+        current_epoch: u64,
+        max_lock_epochs: u64,
+    ) {
+        checkpoint_supply(last_epoch, last_bias, last_slope, slope_changes, current_epoch);
+
+        // Remove old contribution if was active
+        if (old_amount > 0 && old_end > current_epoch) {
+            let old_left = old_end - current_epoch;
+            let old_power = calculate_lock_power(old_amount, old_left, max_lock_epochs);
+            let old_slope = calculate_lock_slope(old_amount, max_lock_epochs);
+
+            if (*last_bias > old_power) {
+                *last_bias = *last_bias - old_power;
+            } else {
+                *last_bias = 0;
+            };
+
+            if (*last_slope > old_slope) {
+                *last_slope = *last_slope - old_slope;
+            } else {
+                *last_slope = 0;
+            };
+
+            sub_slope_change(slope_changes, old_end, old_slope);
+        };
+
+        // Add new contribution if active
+        if (new_amount > 0 && new_end > current_epoch) {
+            let new_left = new_end - current_epoch;
+            let new_power = calculate_lock_power(new_amount, new_left, max_lock_epochs);
+            let new_slope = calculate_lock_slope(new_amount, max_lock_epochs);
+
+            *last_bias = *last_bias + new_power;
+            *last_slope = *last_slope + new_slope;
+
+            add_slope_change(slope_changes, new_end, new_slope);
+        };
+    }
+
+    // Called when a lock is destroyed before its end_epoch (e.g. merge)
+    public fun record_remove_lock(
+        last_epoch: &mut u64,
+        last_bias: &mut u64,
+        last_slope: &mut u64,
+        slope_changes: &mut SmartTable<u64, u64>,
+        amount: u64,
+        end_epoch: u64,
+        current_epoch: u64,
+        max_lock_epochs: u64,
+    ) {
+        record_lock_delta(last_epoch, last_bias, last_slope, slope_changes, amount, end_epoch, 0, 0, current_epoch, max_lock_epochs);
     }
 }

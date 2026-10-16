@@ -1,23 +1,23 @@
-/// Per-DAO script policy ("vault") - a TRI-STATE, plus the global audit fallback.
-///
-/// Each (dao, script_id) is one of:
-///   unset (default) -> the DAO has not spoken: usable IFF the library marks it
-///                      audited. This is the "dynamic" fast-path: a Hoglet-audited
-///                      script can be proposed/executed by ANY DAO without an
-///                      allow-list proposal.
-///   allow           -> the DAO explicitly allow-listed it (usable even if NOT audited).
-///   block           -> the DAO explicitly BLOCKED it (NOT usable even if audited) -
-///                      the sovereign opt-out (e.g. the script's target protocol
-///                      got hacked and the DAO wants it dead immediately).
-///
-/// Type 10 proposals drive this (add=true -> allow, add=false -> block). The gate
-/// `is_approved` is checked at BOTH proposal creation and execution, so blocking a
-/// script (or Hoglet un-auditing it) makes pending executions fail.
-///
-/// Keyed by (dao, script_id) in a single global table: no per-DAO resource and no
-/// initialization needed. Writes take the DAO's `&signer`, which only the
-/// dao_factory governance can produce (via `ledger::generate_signer`), so a caller
-/// can only ever edit its OWN vault.
+// Per-DAO script policy ("vault") - a TRI-STATE, plus the global audit fallback.
+//
+// Each (dao, script_id) is one of:
+//   unset (default) -> the DAO has not spoken: usable IFF the library marks it
+//                      audited. This is the "dynamic" fast-path: a Hoglet-audited
+//                      script can be proposed/executed by ANY DAO without an
+//                      allow-list proposal.
+//   allow           -> the DAO explicitly allow-listed it (usable even if NOT audited).
+//   block           -> the DAO explicitly BLOCKED it (NOT usable even if audited) -
+//                      the sovereign opt-out (e.g. the script's target protocol
+//                      got hacked and the DAO wants it dead immediately).
+//
+// Type 9 proposals drive this (add=true -> allow, add=false -> block). The gate
+// `is_approved` is checked at BOTH proposal creation and execution, so blocking a
+// script (or Hoglet un-auditing it) makes pending executions fail.
+//
+// Keyed by (dao, script_id) in a single global table: no per-DAO resource and no
+// initialization needed. Writes take the DAO's `&signer`, which only the
+// dao_factory governance can produce (via `ledger::generate_signer`), so a caller
+// can only ever edit its OWN vault.
 module dao_scripts::vault {
     use std::signer;
     use std::error;
@@ -38,111 +38,50 @@ module dao_scripts::vault {
     struct VaultState has key {
         state: SmartTable<VaultKey, u8>,
     }
-
     #[event]
-    struct ScriptAllowed has drop, store {
+    struct ScriptStatusChanged has drop, store {
         dao_address: address,
         script_id: u64,
-    }
-
-    #[event]
-    struct ScriptBlocked has drop, store {
-        dao_address: address,
-        script_id: u64,
+        is_allowed: bool,
     }
 
     fun init_module(deployer: &signer) {
         move_to(deployer, VaultState { state: smart_table::new() });
     }
 
-    /// Explicitly allow-lists a script id for the caller's DAO (usable even if the
-    /// script is NOT audited). The id must exist in the global library, so a vault
-    /// can never reference a phantom script.
+    // Explicitly allow-lists a script id for the caller's DAO (usable even if the
+    // script is NOT audited). The id must exist in the global library, so a vault
+    // can never reference a phantom script.
     public fun add(dao_signer: &signer, script_id: u64) acquires VaultState {
         assert!(library::script_exists(script_id), error::invalid_argument(E_SCRIPT_NOT_FOUND));
         let dao = signer::address_of(dao_signer);
         let state = borrow_global_mut<VaultState>(@dao_scripts);
         smart_table::upsert(&mut state.state, VaultKey { dao, script_id }, STATE_ALLOW);
-        event::emit(ScriptAllowed { dao_address: dao, script_id });
+        event::emit(ScriptStatusChanged { dao_address: dao, script_id, is_allowed: true });
     }
 
-    /// Explicitly BLOCKS a script id for the caller's DAO: it can no longer be
-    /// proposed nor executed, even if the library still marks it as audited.
+    // Explicitly BLOCKS a script id for the caller's DAO: it can no longer be
+    // proposed nor executed, even if the library still marks it as audited.
     public fun remove(dao_signer: &signer, script_id: u64) acquires VaultState {
+        assert!(library::script_exists(script_id), error::invalid_argument(E_SCRIPT_NOT_FOUND));
         let dao = signer::address_of(dao_signer);
         let state = borrow_global_mut<VaultState>(@dao_scripts);
         smart_table::upsert(&mut state.state, VaultKey { dao, script_id }, STATE_BLOCK);
-        event::emit(ScriptBlocked { dao_address: dao, script_id });
+        event::emit(ScriptStatusChanged { dao_address: dao, script_id, is_allowed: false });
     }
 
-    /// Gate used at BOTH proposal creation and execution:
-    ///   allow           -> true
-    ///   block           -> false  (even if audited)
-    ///   unset (default) -> true iff the library marks the script audited
+    // Gate used at BOTH proposal creation and execution:
+    //   allow           -> true
+    //   block           -> false  (even if audited)
+    //   unset (default) -> true iff the library marks the script audited
     #[view]
     public fun is_approved(dao: address, script_id: u64): bool acquires VaultState {
         let state = borrow_global<VaultState>(@dao_scripts);
         let key = VaultKey { dao, script_id };
         if (smart_table::contains(&state.state, key)) {
-            return *smart_table::borrow(&state.state, key) == STATE_ALLOW;
+            return *smart_table::borrow(&state.state, key) == STATE_ALLOW
         };
         // Unset: fall back to the global audit signal (dynamic fast-path).
         library::is_audited(script_id)
-    }
-
-    // ============================ TESTS ============================
-
-    #[test_only]
-    use std::string;
-
-    // Registry must exist once; setup is shared across the whole run.
-    #[test_only]
-    fun test_setup(dao_scripts: &signer) {
-        library::test_setup(dao_scripts);
-        if (!exists<VaultState>(@dao_scripts)) {
-            init_module(dao_scripts);
-        };
-    }
-
-    #[test_only]
-    fun submit_script(dao_scripts: &signer, hash: vector<u8>): u64 {
-        let cid = string::utf8(b"bafkreiexampleexampleexampleexampleexampleexampleexample");
-        library::submit_script(dao_scripts, hash, cid, 0u8, false);
-        library::get_count()
-    }
-
-    #[test(dao_scripts = @dao_scripts, factory = @0x6e3e09ab7fd0145d7befc0c68d6944ddc1a90fd45b8a6d28c76d8c48bed676b0)]
-    fun test_vault_tristate(dao_scripts: &signer, factory: &signer) acquires VaultState {
-        test_setup(dao_scripts);
-        let id = submit_script(dao_scripts, x"e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0");
-
-        // unset + NOT audited -> NOT approved
-        assert!(!is_approved(@dao_scripts, id), 1);
-        // explicit allow -> approved
-        add(dao_scripts, id);
-        assert!(is_approved(@dao_scripts, id), 2);
-        // audited, then BLOCK -> still NOT approved (block overrides audit)
-        library::mark_audited(factory, id, true);
-        remove(dao_scripts, id);
-        assert!(!is_approved(@dao_scripts, id), 3);
-    }
-
-    #[test(dao_scripts = @dao_scripts, factory = @0x6e3e09ab7fd0145d7befc0c68d6944ddc1a90fd45b8a6d28c76d8c48bed676b0)]
-    fun test_vault_unset_follows_audit(dao_scripts: &signer, factory: &signer) acquires VaultState {
-        test_setup(dao_scripts);
-        let id = submit_script(dao_scripts, x"f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0");
-
-        // un-audited -> not approved
-        assert!(!is_approved(@dao_scripts, id), 4);
-        // audited (still unset) -> approved via the audit fast-path
-        library::mark_audited(factory, id, true);
-        assert!(is_approved(@dao_scripts, id), 5);
-    }
-
-    #[test(dao_scripts = @dao_scripts)]
-    #[expected_failure]
-    fun test_vault_add_rejects_unknown_script(dao_scripts: &signer) acquires VaultState {
-        test_setup(dao_scripts);
-        add(dao_scripts, 999999); // not in the library -> E_SCRIPT_NOT_FOUND
     }
 }

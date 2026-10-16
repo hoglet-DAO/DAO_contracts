@@ -203,8 +203,13 @@ module dao_factory::sentinel {
         
         // Can pause if: not currently paused (or expired) AND cooldown passed
         let not_actively_paused = !state.is_paused || current_epoch >= state.pause_expiry_epoch;
-        let cooldown_passed = state.last_unpause_epoch == 0 || 
-                              current_epoch >= state.last_unpause_epoch + PAUSE_COOLDOWN_EPOCHS;
+        let effective_unpause = if (state.pause_expiry_epoch > state.last_unpause_epoch) {
+            state.pause_expiry_epoch
+        } else {
+            state.last_unpause_epoch
+        };
+        let cooldown_passed = effective_unpause == 0 || 
+                              current_epoch >= effective_unpause + PAUSE_COOLDOWN_EPOCHS;
         
         not_actively_paused && cooldown_passed
     }

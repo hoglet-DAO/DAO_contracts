@@ -1,13 +1,13 @@
-/// Script argument commitment + allow-list gate for type-9 proposals.
-///
-/// The chain's `get_script_hash()` covers ONLY the bytecode, so a script that
-/// takes arguments would let any executor run it with different inputs. This
-/// module closes that gap: the DAO commits `args_commitment = keccak256(args)`
-/// on-chain, and execution verifies the caller's args against it.
-///
-/// `seal` is the ONLY public entry point for type-9 scripts (`anchor::resolve`
-/// is `public(friend)`), so the args + allow-list checks can never be bypassed.
-///   - `resolve`: single entry point for all scripts (static scripts pass b"").
+// Script argument commitment + allow-list gate for type-8 proposals.
+//
+// The chain's `get_script_hash()` covers ONLY the bytecode, so a script that
+// takes arguments would let any executor run it with different inputs. This
+// module closes that gap: the DAO commits `args_commitment = keccak256(args)`
+// on-chain, and execution verifies the caller's args against it.
+//
+// `seal` is the ONLY public entry point for type-8 scripts (`anchor::resolve`
+// is `public(friend)`), so the args + allow-list checks can never be bypassed.
+//   - `resolve`: single entry point for all scripts (static scripts pass b"").
 module dao_factory::seal {
     use std::error;
     use std::vector;
@@ -28,12 +28,12 @@ module dao_factory::seal {
         script_id: u64,
     }
 
-    /// Resolves a type-9 proposal for any script transaction. Must be
-    /// called from within the script transaction (so `anchor::resolve` can
-    /// compare `get_script_hash()` against the proposal's execution hash).
-    ///
-    /// For parameterized scripts: pass caller-supplied `args`.
-    /// For static (parameterless) scripts: pass `b""` / `vector::empty<u8>()`.
+    // Resolves a type-8 proposal for any script transaction. Must be
+    // called from within the script transaction (so `anchor::resolve` can
+    // compare `get_script_hash()` against the proposal's execution hash).
+    //
+    // For parameterized scripts: pass caller-supplied `args`.
+    // For static (parameterless) scripts: pass `b""` / `vector::empty<u8>()`.
     public fun resolve(dao_address: address, proposal_id: u64, args: vector<u8>): signer {
         let script_id = ledger::get_proposal_script_id(dao_address, proposal_id);
 

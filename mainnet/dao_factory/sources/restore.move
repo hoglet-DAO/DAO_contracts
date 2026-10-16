@@ -10,11 +10,11 @@ module dao_factory::restore {
     friend dao_factory::anchor;
     use std::signer;
     use std::vector;
-    use supra_framework::fungible_asset::{Self, Metadata};
+    use supra_framework::fungible_asset::Metadata;
     use supra_framework::primary_fungible_store;
     use supra_framework::dispatchable_fungible_asset;
 
-    use supra_framework::object::{Self, Object, ExtendRef, TransferRef};
+    use supra_framework::object::{Self, Object, ExtendRef};
     use supra_framework::event;
     use aptos_std::smart_table::{Self, SmartTable};
     use std::error;
@@ -25,7 +25,6 @@ module dao_factory::restore {
     use dao_factory::ledger;
     use dao_factory::zeal;
     use dao_factory::legacy;
-    use dao_factory::sentinel;
     use dao_libs::table;
     use dao_tax_router::tax_router;
     
@@ -38,7 +37,6 @@ module dao_factory::restore {
     const E_INVALID_GAUGE: u64   = 6;
     const E_NOT_OBJECT: u64      = 7;
     const E_NOT_AUTHORIZED: u64  = 8;
-    const E_PAUSED: u64          = 9;
 
     // Structs 
     struct BribeKey has copy, drop, store {
@@ -172,9 +170,9 @@ module dao_factory::restore {
 
     // Deposits 
 
-    /// FIX (audit10 C4): the DAO's cap can only route its own governance
-    /// token (withdraw_with_ref requires matching metadata) and only exists
-    /// for launcher smart tokens (see tax_router::has_tax_free_router).
+    // FIX (audit10 C4): the DAO's cap can only route its own governance
+    // token (withdraw_with_ref requires matching metadata) and only exists
+    // for launcher smart tokens (see tax_router::has_tax_free_router).
     fun use_cap_route(dao_address: address, token_addr: address): bool {
         tax_router::has_tax_free_router(dao_address)
             && token_addr == legacy::get_token_metadata_address(dao_address)
@@ -208,15 +206,14 @@ module dao_factory::restore {
         // a TaxFreeRouter AND the bribe token IS the DAO's governance token.
         // Requires the depositor's explicit signer proof so no DAO script can drain user wallets.
         let use_cap = use_cap_route(dao_address, token_addr);
-        let fa = if (use_cap) {
-            tax_router::withdraw_tax_free_by_owner(dao_address, depositor, user_store, amount)
-        } else {
-            dispatchable_fungible_asset::withdraw(depositor, user_store, amount)
-        };
-
-        let vault_dest = primary_fungible_store::ensure_primary_store_exists(registry.vault_address, fungible_asset::asset_metadata(&fa));
+        let vault_dest = primary_fungible_store::ensure_primary_store_exists(registry.vault_address, token_metadata);
         let bal_before = primary_fungible_store::balance(registry.vault_address, token_metadata);
-        dispatchable_fungible_asset::deposit(vault_dest, fa);
+        if (use_cap) {
+            tax_router::transfer_tax_free_from_owner(dao_address, depositor, user_store, vault_dest, amount);
+        } else {
+            let fa = dispatchable_fungible_asset::withdraw(depositor, user_store, amount);
+            dispatchable_fungible_asset::deposit(vault_dest, fa);
+        };
         let actual_amount = primary_fungible_store::balance(registry.vault_address, token_metadata) - bal_before;
 
         let key = BribeKey { pilgrim, gauge_id, token_addr };
@@ -238,7 +235,6 @@ module dao_factory::restore {
         gauge_id: u64,
         token_metadata_addr: address,
     ) acquires BribeRegistry {
-        assert!(!sentinel::is_paused(dao_address), error::invalid_state(E_PAUSED));
         assert!(object::is_object(legacy_addr), error::invalid_argument(E_NOT_OBJECT));
         assert!(object::is_object(token_metadata_addr), error::invalid_argument(E_NOT_OBJECT));
         let ve_token_obj = object::address_to_object<legacy::VeToken>(legacy_addr);
@@ -293,14 +289,17 @@ module dao_factory::restore {
             } else {
                 dispatchable_fungible_asset::withdraw(&vault_signer, vault_store, share)
             };
-            if (use_cap) {
+            let actual_claimed = if (use_cap) {
                 tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), user_store, fa);
+                share
             } else {
+                let bal_before = primary_fungible_store::balance(claimer_addr, token_metadata);
                 dispatchable_fungible_asset::deposit(user_store, fa);
+                primary_fungible_store::balance(claimer_addr, token_metadata) - bal_before
             };
 
             event::emit(BribeClaimed {
-                dao_address, claimer: claimer_addr, legacy: ve_token_addr, pilgrim, gauge_id, token: token_addr, amount: share
+                dao_address, claimer: claimer_addr, legacy: ve_token_addr, pilgrim, gauge_id, token: token_addr, amount: actual_claimed
             });
         };
     }
@@ -354,9 +353,8 @@ module dao_factory::restore {
         true
     }
 
-    /// Rolls over unclaimed bribes to the next available voting epoch if a gauge received 0 votes.
+    // Rolls over unclaimed bribes to the next available voting epoch if a gauge received 0 votes.
     public entry fun rollover_bribe(
-        _caller: &signer,
         dao_address: address,
         past_pilgrim: u64,
         gauge_id: u64,
@@ -369,8 +367,7 @@ module dao_factory::restore {
         let total_power = zeal::get_gauge_total_votes(dao_address, past_pilgrim, gauge_id);
         assert!(total_power == 0, error::invalid_state(E_NOT_AUTHORIZED)); // Only rollover if 0 votes
 
-        let token_metadata = object::address_to_object<Metadata>(token_metadata_addr);
-        let token_addr = object::object_address(&token_metadata);
+        let token_addr = token_metadata_addr;
         
         let past_key = BribeKey { pilgrim: past_pilgrim, gauge_id, token_addr };
         let registry = borrow_global_mut<BribeRegistry>(dao_address);

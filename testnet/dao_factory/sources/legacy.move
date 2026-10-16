@@ -19,13 +19,13 @@ module dao_factory::legacy {
     use supra_framework::fungible_asset::{
         Self, FungibleAsset, Metadata, FungibleStore
     };
-    use supra_framework::object::{Self, Object, ExtendRef, DeleteRef, TransferRef};
+    use supra_framework::object::{Self, Object, ExtendRef, DeleteRef};
     use supra_framework::primary_fungible_store;
     use supra_framework::dispatchable_fungible_asset;
     use supra_framework::event;
     use aptos_std::smart_vector::{Self, SmartVector};
     use aptos_std::smart_table::{Self, SmartTable};
-    use aptos_std::string_utils;
+    use dao_libs::format;
 
     
     use aptos_token_objects::collection;
@@ -299,40 +299,12 @@ module dao_factory::legacy {
 
     // Advances the global ve-supply decay to current_epoch
     fun checkpoint_supply_internal(history: &mut TotalLockedHistory, current_epoch: u64) {
-        if (history.last_epoch == 0) {
-            history.last_epoch = current_epoch;
-            return
-        };
-        if (current_epoch <= history.last_epoch) {
-            return
-        };
-
-        let (new_epoch, new_bias, new_slope) = scan::advance_ve_decay(
-            history.last_epoch,
-            history.last_bias,
-            history.last_slope,
-            &history.slope_changes,
-            current_epoch,
-        );
-
-        history.last_epoch = new_epoch;
-        history.last_bias = new_bias;
-        history.last_slope = new_slope;
+        scan::checkpoint_supply(&mut history.last_epoch, &mut history.last_bias, &mut history.last_slope, &history.slope_changes, current_epoch);
     }
 
     // Records a brand-new lock into global ve-supply
     fun record_new_lock(history: &mut TotalLockedHistory, amount: u64, end_epoch: u64, current_epoch: u64) {
-        checkpoint_supply_internal(history, current_epoch);
-        if (amount == 0 || end_epoch <= current_epoch) return;
-
-        let lock_epochs = end_epoch - current_epoch;
-        let power = scan::calculate_lock_power(amount, lock_epochs, MAX_LOCK_EPOCHS);
-        let slope = scan::calculate_lock_slope(amount, MAX_LOCK_EPOCHS);
-
-        history.last_bias = history.last_bias + power;
-        history.last_slope = history.last_slope + slope;
-
-        scan::add_slope_change(&mut history.slope_changes, end_epoch, slope);
+        scan::record_new_lock(&mut history.last_epoch, &mut history.last_bias, &mut history.last_slope, &mut history.slope_changes, amount, end_epoch, current_epoch, MAX_LOCK_EPOCHS);
     }
 
     // Updates global ve-supply when a lock's amount and/or duration changes
@@ -344,45 +316,12 @@ module dao_factory::legacy {
         new_end: u64,
         current_epoch: u64,
     ) {
-        checkpoint_supply_internal(history, current_epoch);
-
-        // Remove old contribution if was active
-        if (old_amount > 0 && old_end > current_epoch) {
-            let old_left = old_end - current_epoch;
-            let old_power = scan::calculate_lock_power(old_amount, old_left, MAX_LOCK_EPOCHS);
-            let old_slope = scan::calculate_lock_slope(old_amount, MAX_LOCK_EPOCHS);
-
-            if (history.last_bias > old_power) {
-                history.last_bias = history.last_bias - old_power;
-            } else {
-                history.last_bias = 0;
-            };
-
-            if (history.last_slope > old_slope) {
-                history.last_slope = history.last_slope - old_slope;
-            } else {
-                history.last_slope = 0;
-            };
-
-            scan::sub_slope_change(&mut history.slope_changes, old_end, old_slope);
-        };
-
-        // Add new contribution if active
-        if (new_amount > 0 && new_end > current_epoch) {
-            let new_left = new_end - current_epoch;
-            let new_power = scan::calculate_lock_power(new_amount, new_left, MAX_LOCK_EPOCHS);
-            let new_slope = scan::calculate_lock_slope(new_amount, MAX_LOCK_EPOCHS);
-
-            history.last_bias = history.last_bias + new_power;
-            history.last_slope = history.last_slope + new_slope;
-
-            scan::add_slope_change(&mut history.slope_changes, new_end, new_slope);
-        };
+        scan::record_lock_delta(&mut history.last_epoch, &mut history.last_bias, &mut history.last_slope, &mut history.slope_changes, old_amount, old_end, new_amount, new_end, current_epoch, MAX_LOCK_EPOCHS);
     }
 
     // Called when a lock is destroyed before its end_epoch (e.g. merge)
     fun record_remove_lock(history: &mut TotalLockedHistory, amount: u64, end_epoch: u64, current_epoch: u64) {
-        record_lock_delta(history, amount, end_epoch, 0, 0, current_epoch);
+        scan::record_remove_lock(&mut history.last_epoch, &mut history.last_bias, &mut history.last_slope, &mut history.slope_changes, amount, end_epoch, current_epoch, MAX_LOCK_EPOCHS);
     }
 
     // Upserts the voting-power snapshot for the current epoch: updates the
@@ -405,7 +344,7 @@ module dao_factory::legacy {
         obj_addr: address,
         ve_data: &mut VeToken,
         registry: &mut VeTokenRegistry,
-    ) {
+    ) acquires TotalLockedHistory {
         let owner_addr = signer::address_of(owner);
         // Claim protocol rewards BEFORE changing locked_amount
         if (ve_data.locked_amount > 0) {
@@ -471,13 +410,7 @@ module dao_factory::legacy {
     // URI Generator (served by the API endpoint / configurable base_uri) 
 
     fun get_or_generate_uri(obj_addr: address, registry: &VeTokenRegistry): String {
-        let uri = if (string::is_empty(&registry.base_uri)) {
-            string::utf8(b"https://daos.hoglet.xyz/api/nft/")
-        } else {
-            registry.base_uri
-        };
-        string::append(&mut uri, string_utils::to_string(&obj_addr));
-        uri
+        format::format_ve_nft_uri(registry.base_uri, obj_addr)
     }
 
     fun update_svg_uri(obj_addr: address, ve_data: &VeToken) acquires VeTokenRefs, VeTokenRegistry {
@@ -525,9 +458,9 @@ module dao_factory::legacy {
         update_svg_uri(legacy_addr, ve_data);
     }
 
-    /// Sweeps orphaned rebase from an expired lock into the DAO treasury.
-    /// Permissionless keeper function: anyone can call this for any expired veToken to recover trapped rewards (M-05).
-    public entry fun sweep_expired_rebase(_caller: &signer, legacy_addr: address) acquires VeToken, VeTokenRegistry {
+    // Sweeps orphaned rebase from an expired lock into the DAO treasury.
+    // Permissionless keeper function: anyone can call this for any expired veToken to recover trapped rewards (M-05).
+    public entry fun sweep_expired_rebase(legacy_addr: address) acquires VeToken, VeTokenRegistry {
         assert!(object::is_object(legacy_addr), error::invalid_argument(E_INVALID_OBJECT));
         let ve_data = borrow_global_mut<VeToken>(legacy_addr);
         let current_epoch = pilgrim::now();
@@ -767,6 +700,7 @@ module dao_factory::legacy {
         assert!(from_legacy_addr != into_legacy_addr, error::invalid_argument(E_INVALID_OBJECT));
         
         let (owner_addr, dao_address) = prepare_and_compound(owner, from_legacy_addr);
+        assert_not_blacklisted(dao_address, owner_addr);
         let (_, _) = prepare_and_compound(owner, into_legacy_addr);
 
         // Ensure they belong to the same DAO & other preconditions
@@ -779,6 +713,7 @@ module dao_factory::legacy {
             
             let check_epoch = if (current_epoch > 0) { current_epoch - 1 } else { 0 };
             assert!(from_ve_data.last_voted_epoch < check_epoch, error::invalid_state(E_VOTED_RECENTLY));
+            assert!(into_ve_data.last_voted_epoch < check_epoch, error::invalid_state(E_VOTED_RECENTLY));
         };
 
         // Sentinel: merge is pausable
@@ -1043,23 +978,23 @@ module dao_factory::legacy {
         }
     }
 
-    /// Address that granted the current delegation (the owner at creation or
-    /// delegation time). Used by zeal to enforce the blacklist on
-    /// delegation-based voting (audit10 M3).
-    ///
-    /// NOTE: this is the HISTORICAL owner, not the current holder. veNFTs are
-    /// transferable, so use `get_owner` for the live holder.
+    // Address that granted the current delegation (the owner at creation or
+    // delegation time). Used by zeal to enforce the blacklist on
+    // delegation-based voting (audit10 M3).
+    //
+    // NOTE: this is the HISTORICAL owner, not the current holder. veNFTs are
+    // transferable, so use `get_owner` for the live holder.
     #[view]
     public fun get_delegator(ve_token_obj: Object<VeToken>): address acquires VeToken {
         borrow_global<VeToken>(object::object_address(&ve_token_obj)).delegator
     }
 
-    /// Live owner of the veToken object (the current holder), by raw address.
-    ///
-    /// Exposed so packages that cannot name the private `VeToken` type (e.g.
-    /// `dao_views`) can still verify ownership without re-implementing the
-    /// transferable-object check. It reads the same `object::owner` source the
-    /// `verify_owner_and_get_legacy` write guard uses.
+    // Live owner of the veToken object (the current holder), by raw address.
+    //
+    // Exposed so packages that cannot name the private `VeToken` type (e.g.
+    // `dao_views`) can still verify ownership without re-implementing the
+    // transferable-object check. It reads the same `object::owner` source the
+    // `verify_owner_and_get_legacy` write guard uses.
     #[view]
     public fun get_owner_by_address(ve_token_addr: address): address {
         if (!object::is_object(ve_token_addr)) return @0x0;
@@ -1071,13 +1006,13 @@ module dao_factory::legacy {
         borrow_global<VeToken>(object::object_address(&legacy)).dao_address
     }
 
-    /// Raw per-NFT summary for batch reads. Returns (false, 0, 0, false) when
-    /// the address does not host a VeToken of `target_dao`; otherwise
-    /// (true, locked_amount, end_epoch, is_delegated).
-    /// NOTE: returns a flat tuple because this Move flavor forbids tuples as
-    /// generic type arguments (no Option<(u64, u64, bool)>).
-    /// Companion of dao_factory::legacy_views::get_batch_nft_metadata, which
-    /// lives in the dao_views package to keep the core package small.
+    // Raw per-NFT summary for batch reads. Returns (false, 0, 0, false) when
+    // the address does not host a VeToken of `target_dao`; otherwise
+    // (true, locked_amount, end_epoch, is_delegated).
+    // NOTE: returns a flat tuple because this Move flavor forbids tuples as
+    // generic type arguments (no Option<(u64, u64, bool)>).
+    // Companion of dao_factory::legacy_views::get_batch_nft_metadata, which
+    // lives in the dao_views package to keep the core package small.
     #[view]
     public fun ve_info(nft_addr: address, target_dao: address): (bool, u64, u64, bool) acquires VeToken {
         if (!exists<VeToken>(nft_addr)) return (false, 0, 0, false);
@@ -1094,8 +1029,8 @@ module dao_factory::legacy {
         (true, ve_data.locked_amount, ve_data.end_epoch, is_delegated)
     }
 
-    /// Max lock duration in epochs. Public so views outside the core package
-    /// (dao_views) can replicate the voting-power formula exactly.
+    // Max lock duration in epochs. Public so views outside the core package
+    // (dao_views) can replicate the voting-power formula exactly.
     #[view]
     public fun max_lock_epochs(): u64 {
         MAX_LOCK_EPOCHS
@@ -1106,7 +1041,7 @@ module dao_factory::legacy {
     public entry fun claim_rewards(
         owner: &signer,
         legacy_addr: address,
-    ) acquires VeToken, VeTokenRegistry {
+    ) acquires VeToken, VeTokenRegistry, TotalLockedHistory {
         let (owner_addr, _) = verify_owner_and_get_legacy(owner, legacy_addr);
         
         {
@@ -1131,9 +1066,9 @@ module dao_factory::legacy {
         )
     }
 
-    /// Pending rebase (protocol emission share) for a veToken. It is
-    /// COMPOUNDED into the lock by compound/claim_rewards never claimed
-    /// directly. Math lives in dao_libs::math to keep this view minimal.
+    // Pending rebase (protocol emission share) for a veToken. It is
+    // COMPOUNDED into the lock by compound/claim_rewards never claimed
+    // directly. Math lives in dao_libs::math to keep this view minimal.
     #[view]
     public fun pending_rebase(ve_addr: address): u64 acquires VeToken, VeTokenRegistry {
         let ve_data = borrow_global<VeToken>(ve_addr);
@@ -1147,27 +1082,28 @@ module dao_factory::legacy {
         event::emit(DelegateChanged { legacy, owner, old_delegate, new_delegate });
     }
 
-    /// FIX (audit10 C3 + H-04): routes internal DAO transfers. With a TaxFreeRouter
-    /// (smart-token DAOs) the cap path bypasses the dispatch hooks; without
-    /// one (plain-FA DAOs like HOG) the normal owner-signed flow is used.
-    /// Internal protocol stores owned by the DAO use `withdraw_tax_free`;
-    /// external user stores (create_lock, increase_amount) use `withdraw_tax_free_by_owner`.
+    // FIX (audit10 C3 + H-04): routes internal DAO transfers. With a TaxFreeRouter
+    // (smart-token DAOs) the cap path bypasses the dispatch hooks; without
+    // one (plain-FA DAOs like HOG) the normal owner-signed flow is used.
+    // Internal protocol stores owned by the DAO use `withdraw_tax_free`;
+    // external user stores (create_lock, increase_amount) use `withdraw_tax_free_by_owner`.
     fun transfer_tax_free(dao_address: address, owner: &signer, from_store: Object<FungibleStore>, to_store: Object<FungibleStore>, amount: u64) {
-        let fa = if (tax_router::has_tax_free_router(dao_address)) {
+        if (tax_router::has_tax_free_router(dao_address)) {
             if (object::owner(from_store) == dao_address) {
-                tax_router::withdraw_tax_free(dao_address, &ledger::generate_signer(dao_address), from_store, amount)
+                let fa = tax_router::withdraw_tax_free(dao_address, &ledger::generate_signer(dao_address), from_store, amount);
+                tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), to_store, fa);
             } else {
-                tax_router::withdraw_tax_free_by_owner(dao_address, owner, from_store, amount)
-            }
+                tax_router::transfer_tax_free_from_owner(dao_address, owner, from_store, to_store, amount);
+            };
         } else {
-            dispatchable_fungible_asset::withdraw(owner, from_store, amount)
+            let fa = dispatchable_fungible_asset::withdraw(owner, from_store, amount);
+            tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), to_store, fa);
         };
-        tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), to_store, fa);
     }
 
-    /// FIX (audit10 M3): internal DAO flows bypass the token's dispatch hooks
-    /// (TaxFreeCap), so the blacklist must be enforced explicitly. Shared
-    /// guard for every flow that accumulates voting power or extracts value.
+    // FIX (audit10 M3): internal DAO flows bypass the token's dispatch hooks
+    // (TaxFreeCap), so the blacklist must be enforced explicitly. Shared
+    // guard for every flow that accumulates voting power or extracts value.
     public fun assert_not_blacklisted(dao_address: address, account: address) acquires VeTokenRegistry {
         assert!(
             !smart_token::is_blacklisted(get_token_metadata_address(dao_address), account),
@@ -1175,11 +1111,11 @@ module dao_factory::legacy {
         );
     }
 
-    /// Consolidated voter authorization: verifies the caller is the veToken
-    /// owner OR an authorized delegate, then enforces the blacklist on the
-    /// caller (always) and on the delegator (only for delegated votes).
-    /// FIX (audit10 M3 + audit10 #2): extracted from witness::cast_vote and
-    /// zeal::vote to deduplicate the security-critical pattern.
+    // Consolidated voter authorization: verifies the caller is the veToken
+    // owner OR an authorized delegate, then enforces the blacklist on the
+    // caller (always) and on the delegator (only for delegated votes).
+    // FIX (audit10 M3 + audit10 #2): extracted from witness::cast_vote and
+    // zeal::vote to deduplicate the security-critical pattern.
     public fun assert_authorized_voter(
         dao_address: address,
         voter_addr: address,
@@ -1198,10 +1134,7 @@ module dao_factory::legacy {
     // Extracted to save bytecode (~500 bytes saved by reusing strings and logic)
     fun create_ve_nft_object(registry: &mut VeTokenRegistry): (signer, signer, address, object::ConstructorRef) {
         registry.mint_count = registry.mint_count + 1;
-        let token_name = string::utf8(b"ve");
-        string::append(&mut token_name, registry.token_symbol);
-        string::append(&mut token_name, string::utf8(b" #"));
-        string::append(&mut token_name, string_utils::to_string(&registry.mint_count));
+        let token_name = format::format_ve_nft_name(registry.token_symbol, registry.mint_count);
 
         let creator_signer = object::generate_signer_for_extending(&registry.creator_extend_ref);
         let constructor_ref = token::create(

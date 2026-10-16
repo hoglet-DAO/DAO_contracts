@@ -1,13 +1,13 @@
-/// Staking router one door to turn a governance balance into a veNFT lock.
-///
-/// Unifies the former `legacy_boost_router::create_lock_entry` and
-/// `coin_legacy_router::create_lock_from_coins`: the same intent (lock tokens)
-/// for the two ways the governance token can be held.
-///
-/// Both entries take the GOVERNANCE TOKEN, never a DAO address: the owning
-/// registry (`petra::get_dao_for_token`) is the single source of truth for
-/// which DAO a token belongs to, so a caller can never lock against the wrong
-/// DAO. This mirrors `dao_setup` and `dao_zap`.
+// Staking router one door to turn a governance balance into a veNFT lock.
+//
+// Unifies the former `legacy_boost_router::create_lock_entry` and
+// `coin_legacy_router::create_lock_from_coins`: the same intent (lock tokens)
+// for the two ways the governance token can be held.
+//
+// Both entries take the GOVERNANCE TOKEN, never a DAO address: the owning
+// registry (`petra::get_dao_for_token`) is the single source of truth for
+// which DAO a token belongs to, so a caller can never lock against the wrong
+// DAO. This mirrors `dao_setup` and `dao_zap`.
 module dao_router::dao_staking {
     use std::error;
     use std::option;
@@ -22,8 +22,8 @@ module dao_router::dao_staking {
 
     const E_DAO_NOT_FOUND: u64 = 1;
 
-    /// Resolves the DAO that owns `gov_token`, aborting when the token has no
-    /// DAO yet (it must be activated before it can be locked).
+    // Resolves the DAO that owns `gov_token`, aborting when the token has no
+    // DAO yet (it must be activated before it can be locked).
     fun resolve_dao(gov_token: Object<Metadata>): address {
         let dao_opt = petra::get_dao_for_token(gov_token);
         if (option::is_some(&dao_opt)) {
@@ -33,14 +33,14 @@ module dao_router::dao_staking {
         }
     }
 
-    /// Creates a veNFT lock from the caller's FA (or already-wrapped) balance.
-    ///
-    /// Entry point for frontends/wallets. The returned `Object<VeToken>` is
-    /// discarded because entry functions cannot return values.
-    /// (Lives here rather than in `legacy` to keep the core package lean.)
-    ///
-    /// Every `legacy::create_lock` guard still applies: zero amount, MIN/MAX
-    /// epochs, sentinel pause and blacklist.
+    // Creates a veNFT lock from the caller's FA (or already-wrapped) balance.
+    //
+    // Entry point for frontends/wallets. The returned `Object<VeToken>` is
+    // discarded because entry functions cannot return values.
+    // (Lives here rather than in `legacy` to keep the core package lean.)
+    //
+    // Every `legacy::create_lock` guard still applies: zero amount, MIN/MAX
+    // epochs, sentinel pause and blacklist.
     public entry fun create_lock(
         user: &signer,
         gov_token: Object<Metadata>,
@@ -51,17 +51,17 @@ module dao_router::dao_staking {
         let _nft_object = legacy::create_lock(user, dao_address, amount, lock_epochs);
     }
 
-    /// Coin-native counterpart of `create_lock`: holders of the legacy Coin
-    /// (not of the paired FA) can lock too.
-    ///
-    /// It withdraws the Coin, converts it to its paired FA, parks it in the
-    /// caller's primary store and locks through the same `legacy::create_lock`
-    /// (which withdraws from that primary store).
-    ///
-    /// `CoinType` must be the governance token's ORIGINAL coin type: for a DAO
-    /// created via `dao_setup::create_dao_static_coin<CoinType>`, the paired FA
-    /// IS the DAO's `token_metadata`, so `coin::coin_to_fungible_asset` yields
-    /// exactly the asset `legacy::create_lock` expects.
+    // Coin-native counterpart of `create_lock`: holders of the legacy Coin
+    // (not of the paired FA) can lock too.
+    //
+    // It withdraws the Coin, converts it to its paired FA, parks it in the
+    // caller's primary store and locks through the same `legacy::create_lock`
+    // (which withdraws from that primary store).
+    //
+    // `CoinType` must be the governance token's ORIGINAL coin type: for a DAO
+    // created via `dao_setup::create_dao_static_coin<CoinType>`, the paired FA
+    // IS the DAO's `token_metadata`, so `coin::coin_to_fungible_asset` yields
+    // exactly the asset `legacy::create_lock` expects.
     public entry fun create_lock_from_coins<CoinType>(
         user: &signer,
         amount: u64,
@@ -80,15 +80,18 @@ module dao_router::dao_staking {
 
         // 3. Park it in the caller's primary FA store: `create_lock` withdraws
         //    from `primary_fungible_store::primary_store(user, token_metadata)`.
-        let dest = primary_fungible_store::ensure_primary_store_exists(user_addr, fungible_asset::asset_metadata(&fa));
+        let token_meta = fungible_asset::asset_metadata(&fa);
+        let dest = primary_fungible_store::ensure_primary_store_exists(user_addr, token_meta);
+        let bal_before = primary_fungible_store::balance(user_addr, token_meta);
         dispatchable_fungible_asset::deposit(dest, fa);
+        let actual_amount = primary_fungible_store::balance(user_addr, token_meta) - bal_before;
 
         // 4. Lock.
-        let _nft_object = legacy::create_lock(user, dao_address, amount, lock_epochs);
+        let _nft_object = legacy::create_lock(user, dao_address, actual_amount, lock_epochs);
     }
 
-    /// Resolves a CoinType to its paired FA Metadata object.
-    /// Falls back to @0x1 (native SupraCoin) when no paired metadata exists.
+    // Resolves a CoinType to its paired FA Metadata object.
+    // Falls back to @0x1 (native SupraCoin) when no paired metadata exists.
     fun resolve_metadata<CoinType>(): Object<Metadata> {
         let metadata_opt = coin::paired_metadata<CoinType>();
         if (option::is_some(&metadata_opt)) {

@@ -62,14 +62,13 @@ module dao_factory::anchor {
 
     // Queues an approved proposal for execution after the timelock.
     // Anyone can call this function if the proposal meets the conditions.
-    public entry fun queue_proposal(_caller: &signer, dao_address: address, proposal_id: u64) {
+    public entry fun queue_proposal(dao_address: address, proposal_id: u64) {
         let (_, _, end_time, eta, executed, canceled, for_votes, against_votes, abstain_votes) = ledger::get_proposal_details(dao_address, proposal_id);
         
         assert_active_and_ended(dao_address, end_time);
         
         // Cannot queue twice
         assert!(eta == 0, error::invalid_state(E_ALREADY_QUEUED));
-        assert!(!executed, error::invalid_state(E_ALREADY_EXECUTED));
         assert!(!canceled, error::invalid_state(E_ALREADY_CANCELED));
         
         let quorum_required = ledger::get_proposal_quorum(dao_address, proposal_id);
@@ -85,15 +84,15 @@ module dao_factory::anchor {
         event::emit(ProposalQueued { dao_address, proposal_id, eta });
     }
 
-    /// Resolves a script proposal (type 9) that has passed voting and timelock.
-    /// Can only be called within a transaction whose script bytecode hash matches the proposal's execution_hash.
-    /// Returns the DAO's Signer for transient execution within the calling script.
-    ///
-    /// `public(friend)` ON PURPOSE: scripts must NOT call this directly, because
-    /// it does not verify the args commitment nor the vault allow-list. The ONLY
-    /// public entry point is `seal::resolve`, which checks both and
-    /// then delegates here. This closes the "call anchor::resolve directly to
-    /// bypass seal" attack (HOG-01).
+    // Resolves a script proposal (type 9) that has passed voting and timelock.
+    // Can only be called within a transaction whose script bytecode hash matches the proposal's execution_hash.
+    // Returns the DAO's Signer for transient execution within the calling script.
+    //
+    // `public(friend)` ON PURPOSE: scripts must NOT call this directly, because
+    // it does not verify the args commitment nor the vault allow-list. The ONLY
+    // public entry point is `seal::resolve`, which checks both and
+    // then delegates here. This closes the "call anchor::resolve directly to
+    // bypass seal" attack (HOG-01).
     public(friend) fun resolve(dao_address: address, proposal_id: u64): signer {
         // Type 9 hands the DAO's signer to ARBITRARY code. A guardian (who can
         // ONLY cancel, never execute) is required as a safety net: if a malicious
@@ -107,7 +106,7 @@ module dao_factory::anchor {
         validate_and_mark_executed(dao_address, proposal_id);
 
         let proposal_type = ledger::get_proposal_type(dao_address, proposal_id);
-        assert!(proposal_type == 9, error::invalid_argument(E_INVALID_PROPOSAL_TYPE));
+        assert!(proposal_type == 8, error::invalid_argument(E_INVALID_PROPOSAL_TYPE));
 
         let expected_hash = ledger::get_proposal_execution_hash(dao_address, proposal_id);
         assert!(
@@ -121,14 +120,14 @@ module dao_factory::anchor {
     }
 
     // Executes a proposal action (Treasury, Config, Gauge, etc.) that has passed the timelock.
-    public entry fun execute_action(_caller: &signer, dao_address: address, proposal_id: u64) {
+    public entry fun execute_action(caller: &signer, dao_address: address, proposal_id: u64) {
         validate_and_mark_executed(dao_address, proposal_id);
 
         let dao_signer = ledger::generate_signer(dao_address);
         let proposal_type = ledger::get_proposal_type(dao_address, proposal_id);
         
-        // Script proposals (type 9) must be resolved via anchor::resolve from a script transaction.
-        assert!(proposal_type != 9, error::invalid_argument(E_INVALID_PROPOSAL_TYPE));
+        // Script proposals (type 8) must be resolved via anchor::resolve from a script transaction.
+        assert!(proposal_type != 8, error::invalid_argument(E_INVALID_PROPOSAL_TYPE));
 
         if (proposal_type == 1) { // Treasury Transfer (SupraCoin or FungibleAsset)
             let (asset_address, recipient, amount) = ledger::extract_proposal_action_treasury(dao_address, proposal_id);
@@ -146,6 +145,10 @@ module dao_factory::anchor {
                 dispatchable_fungible_asset::deposit(to_store, fa);
             };
         } else if (proposal_type == 2) { // Config Change
+            if (!charter::is_inflationary(dao_address)) {
+                let guardian_opt = charter::get_guardian(dao_address);
+                assert!(std::option::is_some(&guardian_opt) && signer::address_of(caller) == *std::option::borrow(&guardian_opt), error::permission_denied(E_NOT_GUARDIAN));
+            };
             let (config_key, config_value) = ledger::get_proposal_action_config(dao_address, proposal_id);
             // Defense in depth: keys 9-11 are jubilee emission parameters and
             // only exist on inflationary DAOs (herald already gates this at
@@ -181,6 +184,10 @@ module dao_factory::anchor {
                 abort error::invalid_argument(E_INVALID_ACTION)
             };
         } else if (proposal_type == 4) { // Guardian Update
+            if (!charter::is_inflationary(dao_address)) {
+                let guardian_opt = charter::get_guardian(dao_address);
+                assert!(std::option::is_some(&guardian_opt) && signer::address_of(caller) == *std::option::borrow(&guardian_opt), error::permission_denied(E_NOT_GUARDIAN));
+            };
             let new_guardian = ledger::extract_proposal_action_guardian(dao_address, proposal_id);
             if (new_guardian == @0x0) {
                 charter::update_guardian(&dao_signer, std::option::none());
@@ -194,7 +201,7 @@ module dao_factory::anchor {
             assert!(object::object_exists<token::Token>(nft_address), error::invalid_argument(E_INVALID_ACTION));
             let nft_obj = object::address_to_object<token::Token>(nft_address);
             object::transfer(&dao_signer, nft_obj, recipient);
-        } else if (proposal_type == 7) { // Module Settings
+        } else if (proposal_type == 6) { // Module Settings
             let (setting_type, target_address, string_bytes, bool_val) = ledger::get_proposal_action_module_setting(dao_address, proposal_id);
             if (setting_type == 0) { // legacy::update_base_uri
                 dao_factory::legacy::update_base_uri(&dao_signer, std::string::utf8(string_bytes));
@@ -215,7 +222,7 @@ module dao_factory::anchor {
             } else {
                 abort error::invalid_argument(E_INVALID_ACTION)
             };
-        } else if (proposal_type == 8) { // NFT Boost Collection Action
+        } else if (proposal_type == 7) { // NFT Boost Collection Action
             // Defense in depth: the boost registry only exists on inflationary DAOs.
             assert!(charter::is_inflationary(dao_address), error::invalid_state(E_NOT_INFLATIONARY));
             // Same (u8, address, u64) payload shape as Gauge actions: the view is reused.
@@ -227,7 +234,7 @@ module dao_factory::anchor {
             } else {
                 abort error::invalid_argument(E_INVALID_ACTION)
             };
-        } else if (proposal_type == 10) { // Script Allow-list (type 10)
+        } else if (proposal_type == 9) { // Script Allow-list (type 9)
             let (script_id, add) = ledger::get_proposal_action_script_allow(dao_address, proposal_id);
             if (add) {
                 vault::add(&dao_signer, script_id);
@@ -258,8 +265,10 @@ module dao_factory::anchor {
     // Security Function: Public Cancellation (Threshold Drop).
     // Anyone can cancel a proposal if the proposer's voting power drops below the required threshold.
     // This acts as a decentralized immune system against proposers who lose their community backing.
-    public entry fun public_cancel_proposal(_caller: &signer, dao_address: address, proposal_id: u64) {
-        let (proposer, _, _, _, _, _, _, _, _) = ledger::get_proposal_details(dao_address, proposal_id);
+    public entry fun public_cancel_proposal(dao_address: address, proposal_id: u64) {
+        let (proposer, _, end_time, eta, _, _, _, _, _) = ledger::get_proposal_details(dao_address, proposal_id);
+        assert!(eta == 0, error::invalid_state(E_ALREADY_QUEUED));
+        assert!(timestamp::now_seconds() <= end_time, error::invalid_state(E_PROPOSAL_NOT_ACTIVE));
         let (_, _, _, proposal_threshold, _, _, _, _) = charter::get_dao_config_view(dao_address);
         let ve_token_addr = ledger::get_proposal_ve_token(dao_address, proposal_id);
         
@@ -290,7 +299,7 @@ module dao_factory::anchor {
     // If a proposal is queued but nobody executes it within the grace period,
     // it becomes a "Zombie". This function allows anyone to clean up the state
     // by permanently canceling it, removing it from the queue securely.
-    public entry fun cancel_expired_proposal(_caller: &signer, dao_address: address, proposal_id: u64) {
+    public entry fun cancel_expired_proposal(dao_address: address, proposal_id: u64) {
         let (_, _, _, eta, _, _, _, _, _) = ledger::get_proposal_details(dao_address, proposal_id);
         
         assert!(eta != 0, error::invalid_state(E_TIMELOCK_NOT_READY));
@@ -304,7 +313,7 @@ module dao_factory::anchor {
 
     // Security Function: Finalizes a proposal after voting ends, recording its participation
     // for the dynamic rolling quorum. Anyone can call this.
-    public entry fun finalize_proposal(_caller: &signer, dao_address: address, proposal_id: u64) {
+    public entry fun finalize_proposal(dao_address: address, proposal_id: u64) {
         let (_, _, end_time, _, executed, canceled, for_v, against_v, abstain_v) = ledger::get_proposal_details(dao_address, proposal_id);
         
         assert_active_and_ended(dao_address, end_time);

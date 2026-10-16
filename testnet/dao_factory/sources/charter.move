@@ -84,15 +84,17 @@ module dao_factory::charter {
         launcher_address: address,
         is_inflationary: bool
     ) {
-        assert!(voting_delay >= MIN_DELAY_SECONDS && voting_delay <= MAX_DELAY_SECONDS, error::invalid_argument(E_INVALID_DELAY));
-        assert!(voting_period >= MIN_PERIOD_SECONDS && voting_period <= MAX_DELAY_SECONDS, error::invalid_argument(E_INVALID_PERIOD));
-        assert!(timelock_delay >= MIN_DELAY_SECONDS && timelock_delay <= MAX_DELAY_SECONDS, error::invalid_argument(E_INVALID_DELAY));
-        assert!(quorum_numerator > 0 && quorum_numerator <= quorum_denominator, error::invalid_argument(E_INVALID_QUORUM));
-        // Strict minimum bounds for safety
-        assert!(quorum_numerator * 100 / quorum_denominator >= 1, error::invalid_argument(E_INVALID_QUORUM)); // At least 1%
-        assert!(super_quorum_threshold > 0 && super_quorum_threshold <= quorum_denominator, error::invalid_argument(E_INVALID_QUORUM));
-        assert!(super_quorum_threshold * 100 / quorum_denominator >= 50, error::invalid_argument(E_INVALID_QUORUM)); // At least 50%
-        assert!(proposal_threshold > 0, error::invalid_argument(E_INVALID_THRESHOLD));
+                math::validate_charter_genesis(
+            voting_delay,
+            voting_period,
+            timelock_delay,
+            quorum_numerator,
+            quorum_denominator,
+            super_quorum_threshold,
+            proposal_threshold
+        );
+        assert!(grace_period >= 86400 && grace_period <= 31536000, error::invalid_argument(2));
+        assert!(late_quorum_extension <= 2592000, error::invalid_argument(1));
 
         move_to(dao_signer, DaoConfig {
             name,
@@ -107,10 +109,9 @@ module dao_factory::charter {
             grace_period,
             proposal_count: 0, // Starts with 0 proposals
             guardian,
-            // M-06 Defense: Static DAOs created permissionlessly without a launcher (@0x0)
-            // start inactive (pending approval by the protocol Sentinel/Admin).
-            // Inflationary DAOs created at genesis with mint_ref authority start active.
-            is_active: (launcher_address == @0x0 && is_inflationary),
+            // M-06 Defense: DAOs created permissionlessly without a launcher (@0x0)
+            // or inflationary DAOs start active immediately.
+            is_active: (launcher_address == @0x0 || is_inflationary),
             launcher_address,
             is_inflationary
         });
@@ -171,41 +172,26 @@ module dao_factory::charter {
         borrow_global<DaoConfig>(dao_address).guardian
     }
 
-    fun assert_bounds(value: u64, min: u64, max: u64, err_code: u64) {
-        math::assert_bounds(value, min, max, err_code);
-    }
-
-    // Validates a configuration value without modifying state. Used by herald to validate proposals.
+        // Validates a configuration value without modifying state. Used by herald to validate proposals.
     public fun validate_config_value(dao_address: address, config_key: u8, config_value: u64) acquires DaoConfig {
         let config = borrow_global<DaoConfig>(dao_address);
-        if (config_key == 0) {
-            assert_bounds(config_value, 1, config.quorum_denominator, E_INVALID_QUORUM);
-            assert!(config_value * 100 / config.quorum_denominator >= 50, error::invalid_argument(E_INVALID_QUORUM)); // At least 50% super quorum
-        } else if (config_key == 1) {
-            assert_bounds(config_value, 1, config.quorum_denominator, E_INVALID_QUORUM);
-            assert!(config_value * 100 / config.quorum_denominator >= 1, error::invalid_argument(E_INVALID_QUORUM)); // At least 1% quorum
-        } else if (config_key == 2) {
-            assert!(config_value >= config.quorum_numerator && config_value >= config.super_quorum_threshold, error::invalid_argument(E_INVALID_QUORUM));
-            // [FIX (AUDIT13 #8)] Re-apply the design floors after a denominator
-            // change: the 1% quorum and 50% super-quorum ratios must hold
-            // against the NEW denominator, otherwise governance could degrade
-            // itself below the floors imposed at initialize.
-            assert!(config.quorum_numerator * 100 / config_value >= 1, error::invalid_argument(E_INVALID_QUORUM));
-            assert!(config.super_quorum_threshold * 100 / config_value >= 50, error::invalid_argument(E_INVALID_QUORUM));
-        } else if (config_key == 3) {
-            assert_bounds(config_value, 0, MAX_DELAY_SECONDS, E_INVALID_DELAY);
-        } else if (config_key == 4 || config_key == 7) {
-            assert_bounds(config_value, MIN_DELAY_SECONDS, MAX_DELAY_SECONDS, E_INVALID_DELAY);
-        } else if (config_key == 5 || config_key == 8) {
-            assert_bounds(config_value, MIN_PERIOD_SECONDS, MAX_DELAY_SECONDS, E_INVALID_PERIOD);
-        } else if (config_key == 6) {
-            assert!(config_value > 0, error::invalid_argument(E_INVALID_THRESHOLD));
-            // Standard safety guard: prevent setting an astronomical threshold that permanently soft-locks governance.
-            // Caps any single increase to at most 10x of current baseline.
-            assert!(config_value <= config.proposal_threshold * 10, error::invalid_argument(E_INVALID_THRESHOLD));
-        } else {
-            abort error::invalid_argument(E_INVALID_DELAY) // or E_INVALID_CONFIG_KEY
-        };
+        math::validate_charter_config(
+            config_key,
+            config_value,
+            config.quorum_numerator,
+            config.quorum_denominator,
+            config.super_quorum_threshold,
+            config.proposal_threshold,
+        );
+    }
+
+    // Factory: Recalculate proposal threshold from actual circulating supply (bypasses user-proposal 10x guard)
+    public(friend) fun update_proposal_threshold_by_factory(dao_signer: &signer, new_threshold: u64) acquires DaoConfig {
+        assert!(new_threshold > 0, error::invalid_argument(4));
+        let dao_address = std::signer::address_of(dao_signer);
+        let config = borrow_global_mut<DaoConfig>(dao_address);
+        config.proposal_threshold = new_threshold;
+        event::emit(DaoConfigUpdated { dao_address, config_key: 6, config_value: new_threshold });
     }
 
     // Admin: Modify Configuration (must be called by the DAO itself through execute_proposal)

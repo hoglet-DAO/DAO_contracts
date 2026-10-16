@@ -23,6 +23,6 @@ subdir = "aptos-move/framework/aptos-token-objects"
 [dependencies.dao_libs]
 git = "https://github.com/hoglet-DAO/DAO_contracts.git"
 rev = "main"
-subdir = "mainnet/dao_libs"
+subdir = "testnet/dao_libs"
 
 [dev-dependencies]

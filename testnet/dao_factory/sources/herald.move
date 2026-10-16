@@ -17,7 +17,6 @@ module dao_factory::herald {
     use supra_framework::timestamp;
     use supra_framework::event;
     use supra_framework::object;
-    use aptos_token_objects::token;
     use std::error;
     use aptos_std::smart_table::{Self, SmartTable};
     use aptos_std::aptos_hash;
@@ -30,8 +29,6 @@ module dao_factory::herald {
     use dao_libs::math;
 
     use dao_factory::sentinel;
-    use dao_factory::jubilee;
-    use dao_boost::boost_registry;
 
     use dao_scripts::library;
     use dao_scripts::vault;
@@ -83,16 +80,16 @@ module dao_factory::herald {
         action_amount: u64,
         action_config_key: u64,
         action_config_value: u64,
-        /// Hash of the off-chain proposal metadata (title/description/discussion
-        /// link). It is already stored on-chain in `ledger::Proposal`, but
-        /// without emitting it here indexers cannot resolve it and every
-        /// proposal gets indexed with the "No description provided." default.
+        // Hash of the off-chain proposal metadata (title/description/discussion
+        // link). It is already stored on-chain in `ledger::Proposal`, but
+        // without emitting it here indexers cannot resolve it and every
+        // proposal gets indexed with the "No description provided." default.
         description_hash: vector<u8>,
-        /// Hash of the compiled Move script bytecode (sha3-256) for type 9 proposals.
-        /// Empty for standard proposal types (1-8).
+        // Hash of the compiled Move script bytecode (sha3-256) for type 8 proposals.
+        // Empty for standard proposal types (1-7).
         execution_hash: vector<u8>,
-        /// keccak256 of the script args (32 bytes) for type 9 proposals; empty for
-        /// every other type. Lets indexers commit to the args without a view call.
+        // keccak256 of the script args (32 bytes) for type 8 proposals; empty for
+        // every other type. Lets indexers commit to the args without a view call.
         args_commitment: vector<u8>,
     }
 
@@ -127,6 +124,9 @@ module dao_factory::herald {
         
         // DAO Activation Lock: Only active DAOs can accept proposals
         assert!(charter::is_active(dao_address), error::permission_denied(E_DAO_NOT_ACTIVE));
+
+        // FIX (audit10 M3): blacklisted accounts cannot create proposals
+        legacy::assert_not_blacklisted(dao_address, proposer_addr);
 
         // Check Anti-Spam: 1 Active Proposal Limit
         let herald_state = borrow_global_mut<HeraldState>(dao_address);
@@ -189,313 +189,45 @@ module dao_factory::herald {
             let default_quorum = math::mul_div_u64(total_power, quorum_num, quorum_den);
             ledger::get_dynamic_quorum(dao_address, default_quorum)
         };
+        if (quorum_required == 0 && total_power > 0) {
+            quorum_required = 1;
+        };
         
         (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required, check_epoch)
     }
 
-    public entry fun propose_treasury_transfer(
+    // Generic standard proposal entry point (types 1-7, 9).
+    // Convenience wrappers for each proposal type live in dao_router::dao_proposals.
+    public entry fun propose_standard(
         proposer: &signer,
         legacy_addr: address,
         dao_address: address,
         title: String,
         description_hash: vector<u8>,
-        asset_address: address,
-        recipient: address,
-        amount: u64,
+        is_super_quorum: bool,
+        proposal_type: u8,
+        proposal_data: vector<u8>,
+        action_recipient: address,
+        action_amount: u64,
+        action_config_key: u8,
+        action_config_value: u64,
+        action_target_address: address,
+        event_target: address,
+        event_asset: address,
     ) acquires HeraldState {
-        let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required, snapshot_epoch) = 
-            validate_and_prepare_proposal(proposer, legacy_addr, dao_address, false);
-
-        // Create and store the treasury proposal.
-        let new_proposal = ledger::new_treasury_proposal(
-            proposal_id,
-            proposer_addr,
-            ve_token_addr,
-            title,
-            description_hash,
-            start_time,
-            end_time,
-            snapshot_epoch,
-            quorum_required,
-            asset_address,
-            recipient,
-            amount,
+        assert!(
+            proposal_type == 1 || proposal_type == 2 || proposal_type == 3 ||
+            proposal_type == 4 || proposal_type == 5 || proposal_type == 6 ||
+            proposal_type == 7 || proposal_type == 9,
+            error::invalid_argument(E_INVALID_ACTION_TYPE)
         );
-        ledger::add_proposal(dao_address, proposal_id, new_proposal);
-
-        emit_proposal_event(
-            dao_address, proposal_id, proposer_addr, title, 1, start_time, end_time,
-            @0x0, asset_address, recipient, amount, 0, 0, description_hash, vector::empty(), vector::empty()
+        create_proposal_internal(
+            proposer, legacy_addr, dao_address, title, description_hash, is_super_quorum, proposal_type,
+            proposal_data, action_recipient, action_amount, action_config_key, action_config_value,
+            action_target_address, event_target, event_asset
         );
     }
 
-    public entry fun propose_nft_transfer(
-        proposer: &signer,
-        legacy_addr: address,
-        dao_address: address,
-        title: String,
-        description_hash: vector<u8>,
-        nft_address: address,
-        recipient: address,
-    ) acquires HeraldState {
-        // H-02 Defense: Validate target is a legitimate NFT token and not the DAO or an internal protocol object
-        assert!(nft_address != dao_address, error::invalid_argument(E_INVALID_TARGET));
-        assert!(object::object_exists<token::Token>(nft_address), error::invalid_argument(E_NOT_AN_NFT));
-
-        let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required, snapshot_epoch) = 
-            validate_and_prepare_proposal(proposer, legacy_addr, dao_address, true);
-
-        // Create and store the NFT Transfer proposal.
-        let new_proposal = ledger::new_nft_proposal(
-            proposal_id,
-            proposer_addr,
-            ve_token_addr,
-            title,
-            description_hash,
-            start_time,
-            end_time,
-            snapshot_epoch,
-            quorum_required,
-            nft_address,
-            recipient,
-        );
-        ledger::add_proposal(dao_address, proposal_id, new_proposal);
-
-        emit_proposal_event(
-            dao_address, proposal_id, proposer_addr, title, 5, start_time, end_time,
-            nft_address, @0x0, recipient, 1, 0, 0, description_hash, vector::empty(), vector::empty()
-        );
-    }
-
-    public entry fun propose_config_change(
-        proposer: &signer,
-        legacy_addr: address,
-        dao_address: address,
-        title: String,
-        description_hash: vector<u8>,
-        config_key: u8,
-        config_value: u64,
-    ) acquires HeraldState {
-        assert!(config_key <= 11 || (config_key >= 20 && config_key <= 27), error::invalid_argument(E_INVALID_CONFIG_KEY));
-        if (config_key <= 8) {
-            charter::validate_config_value(dao_address, config_key, config_value);
-            if (config_key == 6) {
-                let total_locked = legacy::get_total_locked(dao_address);
-                if (total_locked > 0) {
-                    assert!(config_value <= total_locked, error::invalid_argument(E_INVALID_CONFIG_KEY));
-                };
-            };
-        } else if (config_key >= 9 && config_key <= 11) {
-            // Keys 9-11 are jubilee emission parameters (decay, tail emission,
-            // gauge split): they only exist on inflationary DAOs.
-            assert!(charter::is_inflationary(dao_address), error::invalid_state(E_NOT_INFLATIONARY));
-            jubilee::assert_valid_emission_param(dao_address, (config_key as u64), config_value);
-        };
-        // Keys 20-27 are Smart Token parameters and require no extra pre-validation here.
-        let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required, snapshot_epoch) = 
-            validate_and_prepare_proposal(proposer, legacy_addr, dao_address, true); // Config changes require super quorum
-
-        let new_proposal = ledger::new_config_proposal(
-            proposal_id,
-            proposer_addr,
-            ve_token_addr,
-            title,
-            description_hash,
-            start_time,
-            end_time,
-            snapshot_epoch,
-            quorum_required,
-            config_key,
-            config_value,
-        );
-        ledger::add_proposal(dao_address, proposal_id, new_proposal);
-
-        emit_proposal_event(
-            dao_address, proposal_id, proposer_addr, title, 2, start_time, end_time,
-            @0x0, @0x0, @0x0, 0, (config_key as u64), config_value, description_hash, vector::empty(), vector::empty()
-        );
-    }
-
-    public entry fun propose_guardian_update(
-        proposer: &signer,
-        legacy_addr: address,
-        dao_address: address,
-        title: String,
-        description_hash: vector<u8>,
-        new_guardian: address,
-    ) acquires HeraldState {
-        let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required, snapshot_epoch) = 
-            validate_and_prepare_proposal(proposer, legacy_addr, dao_address, true); // Guardian changes require super quorum
-
-        let new_proposal = ledger::new_guardian_proposal(
-            proposal_id,
-            proposer_addr,
-            ve_token_addr,
-            title,
-            description_hash,
-            start_time,
-            end_time,
-            snapshot_epoch,
-            quorum_required,
-            new_guardian,
-        );
-        ledger::add_proposal(dao_address, proposal_id, new_proposal);
-
-        emit_proposal_event(
-            dao_address, proposal_id, proposer_addr, title, 4, start_time, end_time,
-            new_guardian, @0x0, @0x0, 0, 0, 0, description_hash, vector::empty(), vector::empty()
-        );
-    }
-
-    public entry fun propose_gauge_action(
-        proposer: &signer,
-        legacy_addr: address,
-        dao_address: address,
-        title: String,
-        description_hash: vector<u8>,
-        action_type: u8,
-        target_address: address,
-        gauge_id: u64,
-    ) acquires HeraldState {
-        assert!(charter::is_inflationary(dao_address), error::invalid_state(E_NOT_INFLATIONARY));
-        let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required, snapshot_epoch) = 
-            validate_and_prepare_proposal(proposer, legacy_addr, dao_address, false); // Gauge actions use regular quorum
-
-        let new_proposal = ledger::new_gauge_proposal(
-            proposal_id,
-            proposer_addr,
-            ve_token_addr,
-            title,
-            description_hash,
-            start_time,
-            end_time,
-            snapshot_epoch,
-            quorum_required,
-            action_type,
-            target_address,
-            gauge_id,
-        );
-        ledger::add_proposal(dao_address, proposal_id, new_proposal);
-
-        emit_proposal_event(
-            dao_address, proposal_id, proposer_addr, title, 3, start_time, end_time,
-            target_address, @0x0, @0x0, 0, (action_type as u64), gauge_id, description_hash, vector::empty(), vector::empty()
-        );
-    }
-
-    public entry fun propose_module_setting(
-        proposer: &signer,
-        legacy_addr: address,
-        dao_address: address,
-        title: String,
-        description_hash: vector<u8>,
-        setting_type: u8,
-        target_address: address,
-        string_value: String,
-        bool_value: bool,
-    ) acquires HeraldState {
-        assert!(setting_type <= 4, error::invalid_argument(E_INVALID_ACTION_TYPE));
-        if (setting_type == 1) {
-            // restore::set_whitelist manages bribe tokens: only meaningful on
-            // inflationary DAOs (static DAOs have no BribeRegistry).
-            assert!(charter::is_inflationary(dao_address), error::invalid_state(E_NOT_INFLATIONARY));
-        };
-        let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required, snapshot_epoch) = 
-            validate_and_prepare_proposal(proposer, legacy_addr, dao_address, true);
-
-        let new_proposal = ledger::new_module_setting_proposal(
-            proposal_id,
-            proposer_addr,
-            ve_token_addr,
-            title,
-            description_hash,
-            start_time,
-            end_time,
-            snapshot_epoch,
-            quorum_required,
-            setting_type,
-            target_address,
-            *std::string::bytes(&string_value),
-            if (bool_value) 1 else 0,
-        );
-        ledger::add_proposal(dao_address, proposal_id, new_proposal);
-
-        emit_proposal_event(
-            dao_address, proposal_id, proposer_addr, title, 7, start_time, end_time,
-            target_address, @0x0, @0x0, 0, (setting_type as u64), if (bool_value) 1 else 0, description_hash, vector::empty(), vector::empty()
-        );
-    }
-
-    // Creates a proposal to approve, update, or remove an NFT collection (0x4
-    // Digital Assets) from the DAO's Boost Registry.
-    //
-    // # Arguments
-    // - `action_type`: 0 = add/update collection, 1 = remove collection.
-    // - `collection_addr`: address of the 0x4 Collection object.
-    // - `boost_bps`: boost in basis points (e.g. 500 = +5%). Ignored for removals.
-    //
-    // Uses REGULAR quorum (like gauge actions): it only affects how the fixed
-    // emissions are redistributed among stakers, never the total supply.
-    public entry fun propose_boost_action(
-        proposer: &signer,
-        legacy_addr: address,
-        dao_address: address,
-        title: String,
-        description_hash: vector<u8>,
-        action_type: u8,
-        collection_addr: address,
-        boost_bps: u64,
-    ) acquires HeraldState {
-        assert!(action_type <= 1, error::invalid_argument(E_INVALID_ACTION_TYPE));
-        assert!(charter::is_inflationary(dao_address), error::invalid_state(E_NOT_INFLATIONARY));
-
-        if (action_type == 0) {
-            // The collection may be a live 0x4 Collection OR the deterministic
-            // wrapped address of a legacy V1 collection that has not been
-            // wrapped yet (the wrapper creates it lazily at exactly that
-            // address). We cannot call the wrapper from here (keeps the
-            // dependency DAG acyclic), so existence is NOT asserted: the boost
-            // only ever takes effect through foundry::apply_boost ->
-            // boost_registry::compute_boost, which verifies real 0x4 Tokens,
-            // ownership and registry membership at claim time.
-            assert!(
-                boost_bps > 0 && boost_bps <= boost_registry::hard_cap_bps(),
-                error::invalid_argument(E_INVALID_BOOST)
-            );
-        };
-
-        let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required, snapshot_epoch) =
-            validate_and_prepare_proposal(proposer, legacy_addr, dao_address, false); // Regular quorum
-
-        let new_proposal = ledger::new_boost_proposal(
-            proposal_id,
-            proposer_addr,
-            ve_token_addr,
-            title,
-            description_hash,
-            start_time,
-            end_time,
-            snapshot_epoch,
-            quorum_required,
-            action_type,
-            collection_addr,
-            boost_bps,
-        );
-        ledger::add_proposal(dao_address, proposal_id, new_proposal);
-
-        emit_proposal_event(
-            dao_address, proposal_id, proposer_addr, title, 8, start_time, end_time,
-            collection_addr, @0x0, @0x0, 0, (action_type as u64), boost_bps, description_hash, vector::empty(), vector::empty()
-        );
-    }
-
-    /// Creates a proposal to execute an arbitrary Move Script (type 9).
-    ///
-    /// # Arguments
-    /// - `script_id`: ID of the script in dao_scripts::library (must be approved in the DAO's vault).
-    /// - `args_commitment`: keccak256 hash of the script arguments (or keccak256(empty) for parameterless).
-    ///
-    /// Uses SUPER QUORUM to prevent governance capture when executing arbitrary scripts with the DAO signer.
     public entry fun propose_script(
         proposer: &signer,
         legacy_addr: address,
@@ -505,24 +237,18 @@ module dao_factory::herald {
         script_id: u64,
         args_commitment: vector<u8>,
     ) acquires HeraldState {
-        // Type 9 executes ARBITRARY code with the DAO's signer. Require a
-        // guardian (a cancel-only safety net) before it can even be proposed.
         assert!(
             std::option::is_some(&charter::get_guardian(dao_address)),
             error::invalid_state(E_NO_GUARDIAN)
         );
-        // Gate (create): the script must be in the DAO's allow-list.
         assert!(
             vault::is_approved(dao_address, script_id),
             error::invalid_state(E_SCRIPT_NOT_ALLOWED)
         );
-        // The execution hash is the library's immutable hash for this id; the
-        // args commitment is keccak256(args) (32 bytes).
         let execution_hash = library::get_execution_hash(script_id);
         assert!(vector::length(&execution_hash) == 32, error::invalid_argument(E_INVALID_HASH_LENGTH));
         assert!(vector::length(&args_commitment) == 32, error::invalid_argument(E_INVALID_HASH_LENGTH));
 
-        // Enforce static vs dynamic consistency against library registry
         let empty_commitment = aptos_hash::keccak256(vector::empty<u8>());
         if (library::has_args(script_id)) {
             assert!(args_commitment != empty_commitment, error::invalid_argument(E_PARAMETERIZED_SCRIPT_EMPTY_ARGS));
@@ -531,93 +257,68 @@ module dao_factory::herald {
         };
 
         let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required, snapshot_epoch) = 
-            validate_and_prepare_proposal(proposer, legacy_addr, dao_address, true); // Script proposals require super quorum
+            validate_and_prepare_proposal(proposer, legacy_addr, dao_address, true);
 
-        let new_proposal = ledger::new_script_proposal(
-            proposal_id,
-            proposer_addr,
-            ve_token_addr,
-            title,
-            description_hash,
-            start_time,
-            end_time,
-            snapshot_epoch,
-            quorum_required,
-            execution_hash,
-            args_commitment,
-            script_id,
+        let packed = execution_hash;
+        vector::append(&mut packed, args_commitment);
+        let proposal = ledger::new_proposal(
+            proposal_id, proposer_addr, ve_token_addr, title, description_hash, start_time, end_time,
+            snapshot_epoch, quorum_required, 8, packed, @0x0, script_id, 0, 0, @0x0
         );
-        ledger::add_proposal(dao_address, proposal_id, new_proposal);
-
-        emit_proposal_event(
-            dao_address, proposal_id, proposer_addr, title, 9, start_time, end_time,
-            @0x0, @0x0, @0x0, script_id, 0, 0, description_hash, execution_hash, args_commitment
-        );
+        ledger::add_proposal(dao_address, proposal_id, proposal);
+        event::emit(ProposalCreated {
+            dao_address, proposal_id, proposer: proposer_addr, title, proposal_type: 8,
+            start_time, end_time, action_target_address: @0x0, action_asset_address: @0x0,
+            action_recipient: @0x0, action_amount: script_id, action_config_key: 0,
+            action_config_value: 0, description_hash, execution_hash, args_commitment
+        });
     }
 
+    // --- Helper for Deduplication ---
 
-
-    /// Type 10: add/remove a script id from the DAO's allow-list (vault).
-    /// Super quorum: the allow-list is what enables script execution.
-    public entry fun propose_script_allow(
+    fun create_proposal_internal(
         proposer: &signer,
         legacy_addr: address,
         dao_address: address,
         title: String,
         description_hash: vector<u8>,
-        script_id: u64,
-        add: bool,
+        is_super_quorum: bool,
+        proposal_type: u8,
+        proposal_data: vector<u8>,
+        action_recipient: address,
+        action_amount: u64,
+        action_config_key: u8,
+        action_config_value: u64,
+        action_target_address: address,
+        event_target: address,
+        event_asset: address,
     ) acquires HeraldState {
-        assert!(library::script_exists(script_id), error::invalid_argument(E_SCRIPT_NOT_FOUND));
+        let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required, snapshot_epoch) = 
+            validate_and_prepare_proposal(proposer, legacy_addr, dao_address, is_super_quorum);
 
-        let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required, snapshot_epoch) =
-            validate_and_prepare_proposal(proposer, legacy_addr, dao_address, true); // super quorum
-
-        let new_proposal = ledger::new_script_allow_proposal(
-            proposal_id,
-            proposer_addr,
-            ve_token_addr,
-            title,
-            description_hash,
-            start_time,
-            end_time,
-            snapshot_epoch,
-            quorum_required,
-            script_id,
-            add,
+        let proposal = ledger::new_proposal(
+            proposal_id, proposer_addr, ve_token_addr, title, description_hash, start_time, end_time,
+            snapshot_epoch, quorum_required, proposal_type, proposal_data, action_recipient,
+            action_amount, action_config_key, action_config_value, action_target_address
         );
-        ledger::add_proposal(dao_address, proposal_id, new_proposal);
-
-        emit_proposal_event(
-            dao_address, proposal_id, proposer_addr, title, 10, start_time, end_time,
-            @0x0, @0x0, @0x0, script_id, 0, (if (add) 1 else 0), description_hash, vector::empty(), vector::empty()
-        );
-    }
-
-    // --- Helpers for Deduplication ---
-
-    fun emit_proposal_event(
-        dao_address: address, proposal_id: u64, proposer: address, title: String, proposal_type: u8, start_time: u64, end_time: u64,
-        action_target_address: address, action_asset_address: address, action_recipient: address, action_amount: u64, action_config_key: u64, action_config_value: u64,
-        description_hash: vector<u8>, execution_hash: vector<u8>, args_commitment: vector<u8>
-    ) {
+        ledger::add_proposal(dao_address, proposal_id, proposal);
         event::emit(ProposalCreated {
             dao_address,
             proposal_id,
-            proposer,
+            proposer: proposer_addr,
             title,
             proposal_type,
             start_time,
             end_time,
-            action_target_address,
-            action_asset_address,
+            action_target_address: event_target,
+            action_asset_address: event_asset,
             action_recipient,
             action_amount,
-            action_config_key,
+            action_config_key: (action_config_key as u64),
             action_config_value,
             description_hash,
-            execution_hash,
-            args_commitment,
+            execution_hash: vector::empty(),
+            args_commitment: vector::empty(),
         });
     }
 }

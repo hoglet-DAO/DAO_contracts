@@ -11,7 +11,6 @@ module dao_factory::ledger {
     use std::string::String;
     use std::error;
     use std::vector;
-    use std::signer;
     use supra_framework::timestamp;
     use supra_framework::account::{Self, SignerCapability};
     use aptos_std::smart_table::{Self, SmartTable};
@@ -39,7 +38,7 @@ module dao_factory::ledger {
         abstain_votes: u64,
         upgrade_metadata: vector<u8>,
         quorum_required: u64,
-        proposal_type: u8, // 1 = Treasury, 2 = Config, 3 = Gauge, 4 = Guardian, 5 = NFT Transfer, 7 = Module Settings, 8 = NFT Boost Collection, 9 = Script Execution
+        proposal_type: u8, // 1 = Treasury, 2 = Config, 3 = Gauge, 4 = Guardian, 5 = NFT Transfer, 6 = Module Settings, 7 = NFT Boost Collection, 8 = Script Execution, 9 = Script Allow-list
         action_recipient: address,
         action_amount: u64,
         action_config_key: u8,
@@ -128,10 +127,8 @@ module dao_factory::ledger {
         get_proposal_safe(state, proposal_id).quorum_reached_historically
     }
 
-    // Shared proposal shell: fills every field with safe defaults so each
-    // typed constructor below only specifies what distinguishes it.
-    // Single source for the Proposal struct literal.
-    fun new_proposal_base(
+    // Shared proposal constructor
+    public(friend) fun new_proposal(
         id: u64,
         proposer: address,
         proposer_ve_token: address,
@@ -161,198 +158,6 @@ module dao_factory::ledger {
             action_config_value,
             action_target_address,
         }
-    }
-
-    // Manual proposal constructor for Treasury action (type 1)
-    public(friend) fun new_treasury_proposal(
-        id: u64,
-        proposer: address,
-        proposer_ve_token: address,
-        title: String,
-        description_hash: vector<u8>,
-        start_time: u64,
-        end_time: u64,
-        snapshot_epoch: u64,
-        quorum_required: u64,
-        asset_address: address,
-        recipient: address,
-        amount: u64
-    ): Proposal {
-        new_proposal_base(
-            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time, snapshot_epoch,
-            quorum_required, 1, vector::empty(), recipient, amount, 0, 0, asset_address
-        )
-    }
-
-    // Manual proposal constructor for NFT Transfer action (type 5)
-    public(friend) fun new_nft_proposal(
-        id: u64,
-        proposer: address,
-        proposer_ve_token: address,
-        title: String,
-        description_hash: vector<u8>,
-        start_time: u64,
-        end_time: u64,
-        snapshot_epoch: u64,
-        quorum_required: u64,
-        nft_address: address,
-        recipient: address
-    ): Proposal {
-        new_proposal_base(
-            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time, snapshot_epoch,
-            quorum_required, 5, vector::empty(), recipient, 1, 0, 0, nft_address
-        )
-    }
-
-    // Manual proposal constructor for Config action (type 2)
-    public(friend) fun new_config_proposal(
-        id: u64,
-        proposer: address,
-        proposer_ve_token: address,
-        title: String,
-        description_hash: vector<u8>,
-        start_time: u64,
-        end_time: u64,
-        snapshot_epoch: u64,
-        quorum_required: u64,
-        config_key: u8,
-        config_value: u64
-    ): Proposal {
-        new_proposal_base(
-            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time, snapshot_epoch,
-            quorum_required, 2, vector::empty(), @0x0, 0, config_key, config_value, @0x0
-        )
-    }
-
-    // Manual proposal constructor for Module Settings (type 7)
-    // Note: the string payload is stored in the upgrade_metadata field.
-    public(friend) fun new_module_setting_proposal(
-        id: u64,
-        proposer: address,
-        proposer_ve_token: address,
-        title: String,
-        description_hash: vector<u8>,
-        start_time: u64,
-        end_time: u64,
-        snapshot_epoch: u64,
-        quorum_required: u64,
-        setting_type: u8,
-        target_address: address,
-        string_value: vector<u8>,
-        bool_value: u64
-    ): Proposal {
-        new_proposal_base(
-            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time, snapshot_epoch,
-            quorum_required, 7, string_value, @0x0, 0, setting_type, bool_value, target_address
-        )
-    }
-
-    // Manual proposal constructor for Guardian Update action (type 4)
-    public(friend) fun new_guardian_proposal(
-        id: u64,
-        proposer: address,
-        proposer_ve_token: address,
-        title: String,
-        description_hash: vector<u8>,
-        start_time: u64,
-        end_time: u64,
-        snapshot_epoch: u64,
-        quorum_required: u64,
-        new_guardian: address
-    ): Proposal {
-        new_proposal_base(
-            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time, snapshot_epoch,
-            quorum_required, 4, vector::empty(), @0x0, 0, 0, 0, new_guardian
-        )
-    }
-
-    // Manual proposal constructor for Gauge action (type 3)
-    public(friend) fun new_gauge_proposal(
-        id: u64,
-        proposer: address,
-        proposer_ve_token: address,
-        title: String,
-        description_hash: vector<u8>,
-        start_time: u64,
-        end_time: u64,
-        snapshot_epoch: u64,
-        quorum_required: u64,
-        action_type: u8,
-        target_address: address,
-        gauge_id: u64
-    ): Proposal {
-        new_proposal_base(
-            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time, snapshot_epoch,
-            quorum_required, 3, vector::empty(), @0x0, 0, action_type, gauge_id, target_address
-        )
-    }
-
-    // Manual proposal constructor for NFT Boost Collection action (type 8)
-    public(friend) fun new_boost_proposal(
-        id: u64,
-        proposer: address,
-        proposer_ve_token: address,
-        title: String,
-        description_hash: vector<u8>,
-        start_time: u64,
-        end_time: u64,
-        snapshot_epoch: u64,
-        quorum_required: u64,
-        action_type: u8,
-        collection_addr: address,
-        boost_bps: u64
-    ): Proposal {
-        new_proposal_base(
-            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time, snapshot_epoch,
-            quorum_required, 8, vector::empty(), @0x0, 0, action_type, boost_bps, collection_addr
-        )
-    }
-
-    // Manual proposal constructor for Script Execution action (type 9)
-    // `upgrade_metadata` packs `execution_hash (32) || args_commitment (32)`.
-    // `script_id` is stored in action_amount (vault gate + metadata lookup).
-    public(friend) fun new_script_proposal(
-        id: u64,
-        proposer: address,
-        proposer_ve_token: address,
-        title: String,
-        description_hash: vector<u8>,
-        start_time: u64,
-        end_time: u64,
-        snapshot_epoch: u64,
-        quorum_required: u64,
-        execution_hash: vector<u8>,
-        args_commitment: vector<u8>,
-        script_id: u64,
-    ): Proposal {
-        let packed = execution_hash;
-        vector::append(&mut packed, args_commitment);
-        new_proposal_base(
-            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time, snapshot_epoch,
-            quorum_required, 9, packed, @0x0, script_id, 0, 0, @0x0
-        )
-    }
-
-    // Manual proposal constructor for Script Allow-list action (type 10)
-    // `script_id` is stored in action_amount; action_config_value = 1 (add) / 0 (remove).
-    public(friend) fun new_script_allow_proposal(
-        id: u64,
-        proposer: address,
-        proposer_ve_token: address,
-        title: String,
-        description_hash: vector<u8>,
-        start_time: u64,
-        end_time: u64,
-        snapshot_epoch: u64,
-        quorum_required: u64,
-        script_id: u64,
-        add: bool,
-    ): Proposal {
-        new_proposal_base(
-            id, proposer, proposer_ve_token, title, description_hash, start_time, end_time, snapshot_epoch,
-            quorum_required, 10, vector::empty(), @0x0, script_id, 0,
-            (if (add) 1 else 0), @0x0
-        )
     }
 
     // Generates a temporary signer using the master key (Only for friend modules)

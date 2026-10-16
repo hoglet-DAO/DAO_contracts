@@ -1,8 +1,8 @@
-/// Setup router  one door to bring a token's governance alive.
-///
-/// Unifies the former `fa_router` and the DAO-creation half of
-/// `coin_legacy_router`: both answer the same question ("give this token a
-/// DAO") for the two ways a token can be held (FA metadata vs legacy Coin).
+// Setup router  one door to bring a token's governance alive.
+//
+// Unifies the former `fa_router` and the DAO-creation half of
+// `coin_legacy_router`: both answer the same question ("give this token a
+// DAO") for the two ways a token can be held (FA metadata vs legacy Coin).
 module dao_router::dao_setup {
     // ==================================================================
     // [UX] The caller passes ONLY the governance token. The router asks the
@@ -49,10 +49,10 @@ module dao_router::dao_setup {
 
     const E_DAO_ALREADY_EXISTS: u64 = 1;
 
-    /// Activates (or creates) the STATIC DAO of `governance_token`.
-    ///
-    /// Both branches charge the DAO creation fee in SUPRA to `user`, who
-    /// is recorded as the DAO creator.
+    // Activates (or creates) the STATIC DAO of `governance_token`.
+    //
+    // Both branches charge the DAO creation fee in SUPRA to `user`, who
+    // is recorded as the DAO creator.
     public entry fun activate_dao(
         user: &signer,
         governance_token: Object<Metadata>,
@@ -75,18 +75,18 @@ module dao_router::dao_setup {
         };
     }
 
-    /// Coin-native counterpart of `activate_dao`: the caller passes only the
-    /// legacy `CoinType` and the router resolves its paired FA metadata.
-    ///
-    /// For a token created through this entry, the paired FA IS the DAO's
-    /// `token_metadata`, which is what the rest of the stack locks against.
+    // Coin-native counterpart of `activate_dao`: the caller passes only the
+    // legacy `CoinType` and the router resolves its paired FA metadata.
+    //
+    // For a token created through this entry, the paired FA IS the DAO's
+    // `token_metadata`, which is what the rest of the stack locks against.
     public entry fun create_dao_static_coin<CoinType>(creator: &signer) {
         let governance_token = resolve_metadata<CoinType>();
         petra::create_dao_static(creator, governance_token);
     }
 
-    /// Resolves a CoinType to its paired FA Metadata object.
-    /// Falls back to @0x1 (native SupraCoin) when no paired metadata exists.
+    // Resolves a CoinType to its paired FA Metadata object.
+    // Falls back to @0x1 (native SupraCoin) when no paired metadata exists.
     fun resolve_metadata<CoinType>(): Object<Metadata> {
         let metadata_opt = coin::paired_metadata<CoinType>();
         if (option::is_some(&metadata_opt)) {

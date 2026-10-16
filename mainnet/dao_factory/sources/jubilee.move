@@ -141,20 +141,7 @@ module dao_factory::jubilee {
                 zeal::distribute_emissions(dao_address, start_epoch + actual_epochs_processed, gauge_fa);
             };
             
-            // Calculate decay for the next epoch
-            // We use u128 to prevent overflow in multiplication
-            let decay = math::apply_bps(config.weekly_emission, config.decay_bps);
-            let next_emission = if (config.weekly_emission > decay) {
-                config.weekly_emission - decay
-            } else {
-                0
-            };
-
-            // Tail emission
-            if (next_emission < config.tail_emission) {
-                next_emission = config.tail_emission;
-            };
-            config.weekly_emission = next_emission;
+            config.weekly_emission = math::calculate_decayed_emission(config.weekly_emission, config.decay_bps, config.tail_emission);
             actual_epochs_processed = actual_epochs_processed + 1;
         };
 
@@ -184,7 +171,7 @@ module dao_factory::jubilee {
     // Keys mirror the config keys routed by anchor::execute_action:
     // 9 = decay_bps, 10 = tail_emission, 11 = gauge_split_bps.
     // The same bounds are enforced again at execution by the update_* functions.
-    public(friend) fun assert_valid_emission_param(dao_address: address, config_key: u64, value: u64) acquires MinterConfig {
+    public fun assert_valid_emission_param(dao_address: address, config_key: u64, value: u64) acquires MinterConfig {
         if (config_key == 9) {
             assert!(value <= 500, error::invalid_argument(E_INVALID_BPS)); // Max 5% decay
         } else if (config_key == 10) {

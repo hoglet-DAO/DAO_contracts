@@ -1,10 +1,10 @@
-/// Zap router  one door to buy governance tokens with any quote and lock them
-/// into a fresh veNFT, atomically.
-///
-/// Formerly `zap_buy_lock_router`. This is the standard ve-tokenomics
-/// one-click flow (Aerodrome/Velodrome "buy & lock", Convex-style zap): the
-/// user pays with a native Coin or any FA and ends up with a lock, without an
-/// intermediate manual step.
+// Zap router  one door to buy governance tokens with any quote and lock them
+// into a fresh veNFT, atomically.
+//
+// Formerly `zap_buy_lock_router`. This is the standard ve-tokenomics
+// one-click flow (Aerodrome/Velodrome "buy & lock", Convex-style zap): the
+// user pays with a native Coin or any FA and ends up with a lock, without an
+// intermediate manual step.
 module dao_router::dao_zap {
     // ==================================================================
     // [FLOW] The caller passes the governance token + payment amount; the
@@ -57,8 +57,8 @@ module dao_router::dao_zap {
     const E_ZERO_AMOUNT: u64 = 3;
     const E_NOTHING_TO_LOCK: u64 = 4;
 
-    /// Owner's primary-store balance; 0 when no store exists yet
-    /// (first-time buyers), so the delta captures the full deposit.
+    // Owner's primary-store balance; 0 when no store exists yet
+    // (first-time buyers), so the delta captures the full deposit.
     inline fun read_balance(owner: address, token: Object<Metadata>): u64 {
         if (primary_fungible_store::primary_store_exists(owner, token)) {
             primary_fungible_store::balance(owner, token)
@@ -67,8 +67,8 @@ module dao_router::dao_zap {
         }
     }
 
-    /// The DAO that owns `gov_token` (the owning module's registry is the
-    /// single source of truth; one-DAO-per-token).
+    // The DAO that owns `gov_token` (the owning module's registry is the
+    // single source of truth; one-DAO-per-token).
     fun resolve_dao(gov_token: Object<Metadata>): address {
         let dao_opt = petra::get_dao_for_token(gov_token);
         if (option::is_some(&dao_opt)) {
@@ -78,9 +78,9 @@ module dao_router::dao_zap {
         }
     }
 
-    /// The route must END at the governance token: the last hop is always the
-    /// buy leg. The frontend may add intermediate hops (e.g. via the wrapped
-    /// SUPRA) to find the best route.
+    // The route must END at the governance token: the last hop is always the
+    // buy leg. The frontend may add intermediate hops (e.g. via the wrapped
+    // SUPRA) to find the best route.
     inline fun assert_path_ends_at(path: &vector<address>, gov_addr: address) {
         assert!(
             !vector::is_empty(path)
@@ -89,11 +89,11 @@ module dao_router::dao_zap {
         );
     }
 
-    /// Claims `amount` of `gov_token` with the native Coin `CoinType` and locks
-    /// the net result into a fresh veNFT for `lock_epochs`, atomically.
-    ///
-    /// `path` follows the amm_router convention; the wrapped-coin start is
-    /// injected by the AMM router itself. Typically `[gov]`.
+    // Claims `amount` of `gov_token` with the native Coin `CoinType` and locks
+    // the net result into a fresh veNFT for `lock_epochs`, atomically.
+    //
+    // `path` follows the amm_router convention; the wrapped-coin start is
+    // injected by the AMM router itself. Typically `[gov]`.
     public entry fun buy_and_lock_coin<CoinType>(
         user: &signer,
         gov_token: Object<Metadata>,
@@ -125,12 +125,12 @@ module dao_router::dao_zap {
         let _nft_object = legacy::create_lock(user, dao_address, delta, lock_epochs);
     }
 
-    /// Claims `amount` of `gov_token` paying with any FA in `path` and locks
-    /// the net result into a fresh veNFT for `lock_epochs`, atomically.
-    ///
-    /// `path` follows the amm_router standard, e.g. `[quote, gov]` or a
-    /// multi-hop route; it must start at the FA paying with and end at the
-    /// governance token.
+    // Claims `amount` of `gov_token` paying with any FA in `path` and locks
+    // the net result into a fresh veNFT for `lock_epochs`, atomically.
+    //
+    // `path` follows the amm_router standard, e.g. `[quote, gov]` or a
+    // multi-hop route; it must start at the FA paying with and end at the
+    // governance token.
     public entry fun buy_and_lock_fa(
         user: &signer,
         gov_token: Object<Metadata>,

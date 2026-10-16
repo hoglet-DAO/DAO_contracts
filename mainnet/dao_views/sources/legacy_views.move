@@ -12,13 +12,13 @@ module dao_views::legacy_views {
     use dao_libs::math;
     use dao_libs::pilgrim;
 
-    /// Batch read of veToken metadata for a DAO.
-    /// NFTs that do not host a VeToken of `target_dao` are skipped silently.
-    ///
-    /// NOTE: `valid_nfts` only means "hosts a VeToken of this DAO" it does
-    /// NOT check who owns the token. veNFTs are transferable 0x4 objects, so
-    /// callers that need the current holder must use
-    /// `get_owned_nft_metadata` instead.
+    // Batch read of veToken metadata for a DAO.
+    // NFTs that do not host a VeToken of `target_dao` are skipped silently.
+    //
+    // NOTE: `valid_nfts` only means "hosts a VeToken of this DAO" it does
+    // NOT check who owns the token. veNFTs are transferable 0x4 objects, so
+    // callers that need the current holder must use
+    // `get_owned_nft_metadata` instead.
     #[view]
     public fun get_batch_nft_metadata(nfts: vector<address>, target_dao: address): (
         vector<address>, // valid_nfts
@@ -33,17 +33,17 @@ module dao_views::legacy_views {
         (valid_nfts, amounts, end_epochs, powers, delegated_flags, current_epoch)
     }
 
-    /// Batch read of veToken metadata **owned by** `owner`.
-    ///
-    /// Same shape as `get_batch_nft_metadata`, plus an `owners` vector aligned
-    /// with the other outputs. A token is included only when its current 0x4
-    /// owner is in the `owners` allow-list, so a caller can never receive a
-    /// veNFT that was transferred away. Pass an empty `owners` to disable the
-    /// filter (equivalent to `get_batch_nft_metadata`, but with owners).
-    ///
-    /// `current_owner` is read live from the core (`legacy::get_owner_by_address`
-    /// -> `object::owner`), the same source of truth the contract's own
-    /// `verify_owner_and_get_legacy` guard uses when mutating a lock.
+    // Batch read of veToken metadata **owned by** `owner`.
+    //
+    // Same shape as `get_batch_nft_metadata`, plus an `owners` vector aligned
+    // with the other outputs. A token is included only when its current 0x4
+    // owner is in the `owners` allow-list, so a caller can never receive a
+    // veNFT that was transferred away. Pass an empty `owners` to disable the
+    // filter (equivalent to `get_batch_nft_metadata`, but with owners).
+    //
+    // `current_owner` is read live from the core (`legacy::get_owner_by_address`
+    // -> `object::owner`), the same source of truth the contract's own
+    // `verify_owner_and_get_legacy` guard uses when mutating a lock.
     #[view]
     public fun get_owned_nft_metadata(
         nfts: vector<address>,
@@ -95,17 +95,5 @@ module dao_views::legacy_views {
         };
 
         (valid_nfts, amounts, end_epochs, powers, delegated_flags, out_owners, current_epoch)
-    }
-
-    /// Returns total active voting power of a DAO at current epoch.
-    #[view]
-    public fun get_total_voting_power(dao_address: address): u64 {
-        legacy::get_total_voting_power(dao_address)
-    }
-
-    /// Returns total voting power of a DAO at `query_epoch`.
-    #[view]
-    public fun get_total_voting_power_at(dao_address: address, query_epoch: u64): u64 {
-        legacy::get_total_voting_power_at(dao_address, query_epoch)
     }
 }

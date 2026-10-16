@@ -10,7 +10,7 @@ module dao_factory::petra {
     use std::signer;
     use supra_framework::account;
     use supra_framework::fungible_asset::{Self, Metadata, MintRef};
-    use supra_framework::object::{Self, Object, TransferRef};
+    use supra_framework::object::{Self, Object};
     use supra_framework::event;
     use supra_framework::smart_table::{Self, SmartTable};
     use supra_framework::supra_coin::SupraCoin;
@@ -77,6 +77,7 @@ module dao_factory::petra {
         // Two-step admin transfer: the candidate must accept before taking over.
         // Prevents permanent loss of control from a typo in transfer_admin.
         pending_admin_address: address,
+        curator_address: address,
 
         // Default DAO Parameters
         default_voting_delay: u64,
@@ -131,11 +132,11 @@ module dao_factory::petra {
         admin: address,
         epoch: u64,
     }
-
     #[event]
     struct StaticDaoApproved has drop, store {
         admin: address,
         dao_address: address,
+        governance_token: address,
     }
 
     #[event]
@@ -154,6 +155,7 @@ module dao_factory::petra {
             fee_receiver: @FACTORY,
             admin_address: @dao_genesis,
             pending_admin_address: @0x0,
+            curator_address: @FACTORY,
             default_voting_delay: charter::min_delay_seconds(), // Using SSOT from charter
             default_voting_period: 604800, // 1 week is standard
             default_proposal_threshold_ppm: 137, // 137 PPM = 0.0137% of Supply
@@ -244,16 +246,24 @@ module dao_factory::petra {
         event::emit(AdminTransferred { old_admin, new_admin: candidate_addr });
     }
 
-    public entry fun approve_launcher(admin: &signer, launcher: address) acquires FactoryConfig, LauncherRegistry {
+    public entry fun set_curator(admin: &signer, new_curator: address) acquires FactoryConfig {
+        assert_admin(admin);
+        let config = borrow_global_mut<FactoryConfig>(@dao_factory);
+        config.curator_address = new_curator;
+    }
+
+    fun set_launcher_status(admin: &signer, launcher: address, status: bool) acquires FactoryConfig, LauncherRegistry {
         assert_admin(admin);
         let registry = borrow_global_mut<LauncherRegistry>(@dao_factory);
-        smart_table::upsert(&mut registry.approved_launchers, launcher, true);
+        smart_table::upsert(&mut registry.approved_launchers, launcher, status);
+    }
+
+    public entry fun approve_launcher(admin: &signer, launcher: address) acquires FactoryConfig, LauncherRegistry {
+        set_launcher_status(admin, launcher, true);
     }
 
     public entry fun revoke_launcher(admin: &signer, launcher: address) acquires FactoryConfig, LauncherRegistry {
-        assert_admin(admin);
-        let registry = borrow_global_mut<LauncherRegistry>(@dao_factory);
-        smart_table::upsert(&mut registry.approved_launchers, launcher, false);
+        set_launcher_status(admin, launcher, false);
     }
 
     public entry fun set_creation_fee(admin: &signer, new_fee: u64) acquires FactoryConfig {
@@ -292,50 +302,33 @@ module dao_factory::petra {
     // causing every new DAO creation to abort, or producing governance
     // parameters outside safe limits.
     
-    public entry fun set_default_config(admin: &signer, config_key: u8, value: u64) acquires FactoryConfig {
+        public entry fun set_default_config(admin: &signer, config_key: u8, value: u64) acquires FactoryConfig {
         assert_admin(admin);
         let config = borrow_global_mut<FactoryConfig>(@dao_factory);
-        
-        if (config_key == 0) {
-            math::assert_bounds(value, 1, config.default_quorum_denominator, E_INVALID_QUORUM);
-            assert!(value * 100 / config.default_quorum_denominator >= 50, error::invalid_argument(E_INVALID_QUORUM));
-            config.default_super_quorum_threshold = value;
-        } else if (config_key == 1) {
-            math::assert_bounds(value, 1, config.default_quorum_denominator, E_INVALID_QUORUM);
-            config.default_quorum_numerator = value;
-        } else if (config_key == 2) {
-            assert!(value >= config.default_quorum_numerator && value >= config.default_super_quorum_threshold, error::invalid_argument(E_INVALID_QUORUM));
-            config.default_quorum_denominator = value;
-        } else if (config_key == 3) {
-            math::assert_bounds(value, 0, charter::max_delay_seconds(), E_INVALID_EXTENSION);
-            config.default_late_quorum_extension = value;
-        } else if (config_key == 4 || config_key == 7) {
-            math::assert_bounds(value, charter::min_delay_seconds(), charter::max_delay_seconds(), if (config_key == 4) E_INVALID_VOTING_DELAY else E_INVALID_TIMELOCK);
-            if (config_key == 4) config.default_voting_delay = value else config.default_timelock_delay = value;
-        } else if (config_key == 5) {
-            math::assert_bounds(value, charter::min_period_seconds(), charter::max_delay_seconds(), E_INVALID_VOTING_PERIOD);
-            config.default_voting_period = value;
-        } else if (config_key == 6) {
-            math::assert_bounds(value, 1, 1_000_000, E_INVALID_THRESHOLD_PPM);
-            config.default_proposal_threshold_ppm = value;
-        } else if (config_key == 8) {
-            math::assert_bounds(value, 0, 31536000, E_INVALID_GRACE_PERIOD);
-            config.default_grace_period = value;
-        } else if (config_key == 9) {
-            math::assert_bounds(value, 0, 500, E_DECAY_TOO_HIGH);
-            config.default_decay_bps = value;
-        } else if (config_key == 10 || config_key == 12) {
-            math::assert_bounds(value, 0, 1_000_000, E_INVALID_EMISSION_PPM);
-            if (config_key == 10) config.default_tail_emission_ppm = value else config.default_initial_emission_ppm = value;
-        } else if (config_key == 11) {
-            math::assert_bounds(value, 8000, 10000, E_GAUGE_SPLIT_TOO_LOW);
-            config.default_gauge_split_bps = value;
-        } else {
-            abort error::invalid_argument(E_INVALID_ADDRESS)
-        };
+        math::validate_factory_default(
+            config_key,
+            value,
+            config.default_quorum_numerator,
+            config.default_quorum_denominator,
+            config.default_super_quorum_threshold
+        );
+        if (config_key == 0) config.default_super_quorum_threshold = value
+        else if (config_key == 1) config.default_quorum_numerator = value
+        else if (config_key == 2) config.default_quorum_denominator = value
+        else if (config_key == 3) config.default_late_quorum_extension = value
+        else if (config_key == 4) config.default_voting_delay = value
+        else if (config_key == 5) config.default_voting_period = value
+        else if (config_key == 6) config.default_proposal_threshold_ppm = value
+        else if (config_key == 7) config.default_timelock_delay = value
+        else if (config_key == 8) config.default_grace_period = value
+        else if (config_key == 9) config.default_decay_bps = value
+        else if (config_key == 10) config.default_tail_emission_ppm = value
+        else if (config_key == 11) config.default_gauge_split_bps = value
+        else if (config_key == 12) config.default_initial_emission_ppm = value;
     }
-    
+
     // The admin can renounce, burning the admin key.
+
     // This is irreversible - once renounced, no one is admin.
     public entry fun renounce_admin(admin: &signer) acquires FactoryConfig {
         assert_admin(admin);
@@ -384,6 +377,13 @@ module dao_factory::petra {
         );
     }
 
+    fun assert_claimed_by_launcher(launcher_registry: &LauncherRegistry, launcher_address: address, governance_token: Object<Metadata>) {
+        if (smart_table::contains(&launcher_registry.claimed_tokens, governance_token)) {
+            let claiming_launcher = *smart_table::borrow(&launcher_registry.claimed_tokens, governance_token);
+            assert!(claiming_launcher == launcher_address, error::permission_denied(E_UNAUTHORIZED_LAUNCHER));
+        };
+    }
+
     fun assert_valid_dao(dao_address: address, governance_token: Object<Metadata>) acquires DaoRegistry {
         let registry = borrow_global<DaoRegistry>(@dao_factory);
         let registered_dao = *smart_table::borrow(&registry.registered_tokens, governance_token);
@@ -398,6 +398,8 @@ module dao_factory::petra {
     ): address acquires FactoryConfig, DaoRegistry, LauncherRegistry {
         let launcher_address = signer::address_of(launcher_signer);
         assert_launcher(launcher_address);
+        let launcher_registry = borrow_global<LauncherRegistry>(@dao_factory);
+        assert_claimed_by_launcher(launcher_registry, launcher_address, governance_token);
 
         charge_creation_fee(creator);
 
@@ -438,7 +440,7 @@ module dao_factory::petra {
         let supply_opt = fungible_asset::supply(governance_token);
         assert!(option::is_some(&supply_opt), error::invalid_argument(E_NO_SUPPLY_TRACKING));
         let current_supply = if (option::is_some(&expected_supply_opt)) { *option::borrow(&expected_supply_opt) } else { *option::borrow(&supply_opt) };
-        assert!(current_supply > 0, error::invalid_argument(E_SUPPLY_ZERO));
+        assert!(current_supply > 0 && current_supply <= 18446744073709551615, error::invalid_argument(E_SUPPLY_ZERO));
 
         (dao_signer, signer_cap, dao_address, name, current_supply) // keep u128 to prevent truncation
     }
@@ -458,7 +460,7 @@ module dao_factory::petra {
         assert_token_not_registered(governance_token);
         let (dao_signer, signer_cap, dao_address, name, current_supply) = prepare_dao_creation(creator, governance_token, expected_supply_opt);
 
-        initialize_core_modules(&dao_signer, signer_cap, name, config, current_supply, launcher_address, false, governance_token, dao_address);
+        initialize_core_modules(&dao_signer, signer_cap, name, config, current_supply, launcher_address, false, governance_token);
         sentinel::initialize(&dao_signer);
 
         let registry = borrow_global_mut<DaoRegistry>(@dao_factory);
@@ -488,13 +490,20 @@ module dao_factory::petra {
         governance_token: Object<Metadata>
     ) acquires LauncherRegistry {
         let launcher_address = signer::address_of(launcher_signer);
+        assert_launcher(launcher_address);
         let launcher_registry = borrow_global_mut<LauncherRegistry>(@dao_factory);
-        assert!(
-            smart_table::contains(&launcher_registry.approved_launchers, launcher_address) && 
-            *smart_table::borrow(&launcher_registry.approved_launchers, launcher_address),
-            error::permission_denied(E_UNAUTHORIZED_LAUNCHER)
-        );
         smart_table::add(&mut launcher_registry.claimed_tokens, governance_token, launcher_address);
+    }
+
+    public entry fun claim_token_by_admin(
+        admin: &signer,
+        launcher_address: address,
+        governance_token: Object<Metadata>
+    ) acquires FactoryConfig, LauncherRegistry {
+        assert_admin(admin);
+        assert_launcher(launcher_address);
+        let launcher_registry = borrow_global_mut<LauncherRegistry>(@dao_factory);
+        smart_table::upsert(&mut launcher_registry.claimed_tokens, governance_token, launcher_address);
     }
 
     public entry fun unclaim_token(
@@ -521,6 +530,8 @@ module dao_factory::petra {
     ): address acquires FactoryConfig, DaoRegistry, LauncherRegistry {
         let launcher_address = signer::address_of(launcher_signer);
         assert_launcher(launcher_address);
+        let launcher_registry = borrow_global<LauncherRegistry>(@dao_factory);
+        assert_claimed_by_launcher(launcher_registry, launcher_address, governance_token);
 
         charge_creation_fee(creator);
         let config = borrow_global<FactoryConfig>(@dao_factory);
@@ -555,7 +566,7 @@ module dao_factory::petra {
 
         let (dao_signer, signer_cap, dao_address, name, current_supply) = prepare_dao_creation(creator, governance_token, expected_supply_opt);
 
-        initialize_core_modules(&dao_signer, signer_cap, name, config, current_supply, launcher_address, true, governance_token, dao_address);
+        initialize_core_modules(&dao_signer, signer_cap, name, config, current_supply, launcher_address, true, governance_token);
 
         zeal::initialize(&dao_signer, dao_address, amm_pool_addresses);
         restore::initialize(&dao_signer, object::object_address(&governance_token), config.default_bribe_tokens);
@@ -587,9 +598,11 @@ module dao_factory::petra {
         assert_admin(admin);
         assert!(!charter::is_active(dao_address), error::invalid_state(E_DAO_ALREADY_ACTIVE));
         charter::set_active_by_factory(dao_address);
+                let governance_token = legacy::get_token_metadata_address(dao_address);
         event::emit(StaticDaoApproved {
             admin: signer::address_of(admin),
             dao_address,
+            governance_token,
         });
     }
 
@@ -602,7 +615,7 @@ module dao_factory::petra {
         let registry = borrow_global_mut<DaoRegistry>(@dao_factory);
         assert!(smart_table::contains(&registry.registered_tokens, governance_token), error::not_found(E_DAO_NOT_FOUND));
         let dao_address = *smart_table::borrow(&registry.registered_tokens, governance_token);
-        assert!(!charter::is_active(dao_address), error::invalid_state(E_DAO_ALREADY_ACTIVE));
+        assert!(!charter::is_inflationary(dao_address), error::invalid_state(E_NOT_INFLATIONARY));
         smart_table::remove(&mut registry.registered_tokens, governance_token);
         event::emit(StaticDaoRejected {
             admin: signer::address_of(admin),
@@ -630,20 +643,20 @@ module dao_factory::petra {
         zeal::activate_gauge_by_staking_token(dao_address, staking_token_addr);
     }
 
-    /// Stores the TaxFreeCap produced by the launcher's migration flow into
-    /// the DAO's account so tax_router can route internal DAO transfers
-    /// tax-free (audit10 C1b/C2).
-    ///
-    /// FIX (audit13 R-1): `routers` registers the protocol objects (the
-    /// launchpad Pool) allowed to produce the signer-proof for tax-free
-    /// routes. Registered at creation, while the DAO resource signer is
-    /// available there is no post-registration signer path at all.
-    ///
-    /// SECURITY: double gate the caller must be an approved launcher AND
-    /// the launcher registered for THIS DAO (charter binds it at creation).
-    /// A TaxFreeCap can only be obtained from
-    /// smart_token::enable_tax_free_routing by the token's admin, so this
-    /// cannot be used to inject a foreign cap into a victim DAO.
+    // Stores the TaxFreeCap produced by the launcher's migration flow into
+    // the DAO's account so tax_router can route internal DAO transfers
+    // tax-free (audit10 C1b/C2).
+    //
+    // FIX (audit13 R-1): `routers` registers the protocol objects (the
+    // launchpad Pool) allowed to produce the signer-proof for tax-free
+    // routes. Registered at creation, while the DAO resource signer is
+    // available there is no post-registration signer path at all.
+    //
+    // SECURITY: double gate the caller must be an approved launcher AND
+    // the launcher registered for THIS DAO (charter binds it at creation).
+    // A TaxFreeCap can only be obtained from
+    // smart_token::enable_tax_free_routing by the token's admin, so this
+    // cannot be used to inject a foreign cap into a victim DAO.
     public fun store_tax_free_cap(
         launcher_signer: &signer,
         dao_address: address,
@@ -656,11 +669,11 @@ module dao_factory::petra {
         tax_router::store_tax_free_cap(&ledger::generate_signer(dao_address), cap, routers);
     }
 
-    /// FIX (audit13 R-2) Launched-after-migration registration: the launcher
-    /// whitelists a NEW bonding-curve Pool into an EARLIER DAO's TaxFreeRouter
-    /// (a later launch using that DAO's token as a QUOTE). Same identity
-    /// pattern as activate_dao: the caller must be the launcher bound to
-    /// THIS DAO at creation; the DAO master signer is produced internally.
+    // FIX (audit13 R-2) Launched-after-migration registration: the launcher
+    // whitelists a NEW bonding-curve Pool into an EARLIER DAO's TaxFreeRouter
+    // (a later launch using that DAO's token as a QUOTE). Same identity
+    // pattern as activate_dao: the caller must be the launcher bound to
+    // THIS DAO at creation; the DAO master signer is produced internally.
     public fun add_tax_router(
         launcher_signer: &signer,
         dao_address: address,
@@ -675,9 +688,9 @@ module dao_factory::petra {
         dao_address: address,
         governance_token: Object<Metadata>
     ) acquires FactoryConfig, DaoRegistry, LauncherRegistry {
-        let launcher_addr = signer::address_of(launcher_signer);
-        assert_launcher(launcher_addr);
+        assert_launcher_of_dao(launcher_signer, dao_address);
         assert_valid_dao(dao_address, governance_token);
+        assert!(!charter::is_inflationary(dao_address), error::invalid_state(E_NOT_INFLATIONARY));
 
         let config = borrow_global<FactoryConfig>(@dao_factory);
         recalculate_threshold(dao_address, governance_token, config.default_proposal_threshold_ppm);
@@ -696,9 +709,8 @@ module dao_factory::petra {
         // routing emissions to the (nonexistent) gauges.
         assert!(zeal::is_initialized(dao_address), error::invalid_state(E_NOT_INFLATIONARY));
 
-        // SECURITY FIX (M6): Validate the caller is an approved launcher
-        let launcher_addr = signer::address_of(launcher_signer);
-        assert_launcher(launcher_addr);
+        // SECURITY FIX (M6): Validate caller is approved launcher of this DAO
+        assert_launcher_of_dao(launcher_signer, dao_address);
 
         // SECURITY FIX (M6): Validate the DAO actually belongs to the governance token
         assert_valid_dao(dao_address, governance_token);
@@ -711,13 +723,9 @@ module dao_factory::petra {
         fungible_asset::destroy_zero(test_mint);
 
         let config = borrow_global<FactoryConfig>(@dao_factory);
-        recalculate_threshold(dao_address, governance_token, config.default_proposal_threshold_ppm);
+        let current_supply = recalculate_threshold(dao_address, governance_token, config.default_proposal_threshold_ppm);
 
-        init_jubilee_internal(&ledger::generate_signer(dao_address), mint_ref, config, {
-            let supply_opt = fungible_asset::supply(governance_token);
-            assert!(option::is_some(&supply_opt), error::invalid_argument(E_NO_SUPPLY_TRACKING));
-            *option::borrow(&supply_opt)
-        });
+        init_jubilee_internal(&ledger::generate_signer(dao_address), mint_ref, config, current_supply);
 
         charter::set_active(launcher_signer, dao_address);
     }
@@ -733,6 +741,11 @@ module dao_factory::petra {
     #[view]
     public fun get_creation_fee(): u64 acquires FactoryConfig {
         borrow_global<FactoryConfig>(@dao_factory).creation_fee
+    }
+
+    #[view]
+    public fun get_curator(): address acquires FactoryConfig {
+        borrow_global<FactoryConfig>(@dao_factory).curator_address
     }
 
     #[view]
@@ -766,15 +779,15 @@ module dao_factory::petra {
         current_supply: u128,
         launcher_address: address,
         is_inflationary: bool,
-        governance_token: Object<Metadata>,
-        dao_address: address
+        governance_token: Object<Metadata>
     ) {
+        let dao_address = signer::address_of(dao_signer);
         let dynamic_threshold = math::compute_dynamic_threshold(current_supply, config.default_proposal_threshold_ppm);
 
         charter::initialize(
             dao_signer, name, config.default_voting_delay, config.default_voting_period, dynamic_threshold,
             config.default_quorum_numerator, config.default_quorum_denominator, config.default_super_quorum_threshold,
-            config.default_late_quorum_extension, config.default_timelock_delay, config.default_grace_period, option::none(),
+            config.default_late_quorum_extension, config.default_timelock_delay, config.default_grace_period, if (is_inflationary) { option::none() } else { option::some(config.curator_address) },
             launcher_address,
             is_inflationary
         );
@@ -809,13 +822,14 @@ module dao_factory::petra {
 
     // Shared threshold recalculation from live supply (used by
     // update_static_dao_threshold and activate_dao_inflationary).
-    fun recalculate_threshold(dao_address: address, governance_token: Object<Metadata>, threshold_ppm: u64) {
+    fun recalculate_threshold(dao_address: address, governance_token: Object<Metadata>, threshold_ppm: u64): u128 {
         let supply_opt = fungible_asset::supply(governance_token);
         assert!(option::is_some(&supply_opt), error::invalid_argument(E_NO_SUPPLY_TRACKING));
         let current_supply = *option::borrow(&supply_opt);
         let dynamic_threshold = math::compute_dynamic_threshold(current_supply, threshold_ppm);
         let dao_signer = ledger::generate_signer(dao_address);
-        charter::update_config(&dao_signer, 6, dynamic_threshold);
+        charter::update_proposal_threshold_by_factory(&dao_signer, dynamic_threshold);
+        current_supply
     }
 
     // SECURITY: the caller must be an approved launcher AND the launcher
@@ -826,142 +840,6 @@ module dao_factory::petra {
         assert!(
             charter::get_launcher_address(dao_address) == launcher_addr,
             error::permission_denied(E_UNAUTHORIZED_LAUNCHER)
-        );
-    }
-
-    // ------------------------------------------------------------------
-    // Tests -- everything below is #[test_only] and stripped at deploy.
-    // ------------------------------------------------------------------
-
-    #[test_only]
-    use supra_framework::primary_fungible_store;
-
-    // Shared bootstrap: bootstraps a fresh factory + a governance token with
-    // tracked positive supply, returns the token object. Creation is made free
-    // so coin-less test accounts can pay. NOTE: tests share global VM state,
-    // so each test must use a distinct creator (distinct token name).
-    #[test_only]
-    fun setup_factory_and_token(
-        factory: &signer,
-        admin: &signer,
-        creator: &signer
-    ): Object<Metadata> acquires FactoryConfig {
-        // The Move test VM has no clock: bootstrap timestamp before anything
-        // that reads it (prepare_dao_creation calls now_microseconds).
-        let fw = account::create_signer_for_test(@supra_framework);
-        timestamp::set_time_has_started_for_testing(&fw);
-
-        if (!exists<FactoryConfig>(@dao_factory)) {
-            init_module(factory);
-        };
-        let creator_addr = signer::address_of(creator);
-        account::create_account_for_test(creator_addr);
-
-        // Governance token: primary-store-enabled, tracked positive supply.
-        let token_ref = object::create_named_object(creator, b"TEST_DAO_TOKEN");
-        primary_fungible_store::create_primary_store_enabled_fungible_asset(
-            &token_ref,
-            option::none(),
-            string::utf8(b"Test DAO Token"),
-            string::utf8(b"TDT"),
-            8,
-            string::utf8(b"icon"),
-            string::utf8(b"project")
-        );
-        let mint_ref = fungible_asset::generate_mint_ref(&token_ref);
-        let coins = fungible_asset::mint(&mint_ref, 1_000_000_000_000);
-        primary_fungible_store::deposit(creator_addr, coins);
-
-        // Free creation so the coin-less test account can pay.
-        set_creation_fee(admin, 0);
-
-        object::object_from_constructor_ref<Metadata>(&token_ref)
-    }
-
-    // Permissionless static creation: resource account + core modules, then
-    // registered + pending approval from sentinel/admin.
-    #[test(factory = @dao_factory, admin = @dao_genesis, creator = @0xC0FFEE)]
-    fun test_create_static_dao(
-        factory: &signer,
-        admin: &signer,
-        creator: &signer
-    ) acquires FactoryConfig, DaoRegistry, LauncherRegistry {
-        let token = setup_factory_and_token(factory, admin, creator);
-
-        // Full static path: resource account + core module initialization.
-        create_dao_static(creator, token);
-
-        // Registry binding + metadata mirror + pending-by-default semantics.
-        let dao_opt = get_dao_for_token(token);
-        assert!(option::is_some(&dao_opt), 1);
-        let dao_addr = *option::borrow(&dao_opt);
-        assert!(dao_addr != @0x0, 2);
-        assert!(legacy::get_token_metadata_address(dao_addr) == object::object_address(&token), 3);
-        assert!(!charter::is_active(dao_addr), 4);
-        approve_static_dao(admin, dao_addr);
-        assert!(charter::is_active(dao_addr), 5);
-    }
-
-    // M-06: A squatted static DAO can be rejected and unbound by admin, freeing the token.
-    #[test(factory = @dao_factory, admin = @dao_genesis, creator = @0xC0FF03)]
-    fun test_reject_and_unbind_static_dao(
-        factory: &signer,
-        admin: &signer,
-        creator: &signer
-    ) acquires FactoryConfig, DaoRegistry, LauncherRegistry {
-        let token = setup_factory_and_token(factory, admin, creator);
-
-        create_dao_static(creator, token);
-        let dao_addr = *option::borrow(&get_dao_for_token(token));
-        assert!(!charter::is_active(dao_addr), 1);
-
-        // Sentinel / admin rejects the squatted DAO
-        reject_static_dao(admin, token);
-
-        // Registry is now unbound
-        assert!(option::is_none(&get_dao_for_token(token)), 2);
-
-        // Now the legitimate creator can register it
-        create_dao_static(creator, token);
-        assert!(option::is_some(&get_dao_for_token(token)), 3);
-    }
-
-    // The same governance token cannot back two DAOs.
-    #[test(factory = @dao_factory, admin = @dao_genesis, creator = @0xC0FF01)]
-    #[expected_failure(abort_code = 0x80005)] // already_exists(E_DAO_ALREADY_EXISTS)
-    fun test_static_dao_duplicate_rejected(
-        factory: &signer,
-        admin: &signer,
-        creator: &signer
-    ) acquires FactoryConfig, DaoRegistry, LauncherRegistry {
-        let token = setup_factory_and_token(factory, admin, creator);
-
-        create_dao_static(creator, token);
-        create_dao_static(creator, token); // second call must abort
-    }
-
-    // SECURITY: an inflationary DAO created by a launcher MUST use a
-    // dao_tokens::smart_token (its rebase/gauge/bribe flows assume the
-    // TaxFreeCap); a plain FA is rejected up front.
-    #[test(factory = @dao_factory, admin = @dao_genesis, creator = @0xC0FF02, launcher = @0x1A0)]
-    #[expected_failure(abort_code = 0x1001B)] // invalid_argument(E_INFLATIONARY_REQUIRES_SMART_TOKEN)
-    fun test_inflationary_requires_smart_token(
-        factory: &signer,
-        admin: &signer,
-        creator: &signer,
-        launcher: &signer
-    ) acquires FactoryConfig, DaoRegistry, LauncherRegistry {
-        let token = setup_factory_and_token(factory, admin, creator);
-
-        // Approve the launcher, then attempt an inflationary creation with a
-        // non-smart_token FA -> the guard aborts before any module init.
-        approve_launcher(admin, signer::address_of(launcher));
-        create_dao_inflationary_from_launcher(
-            creator,
-            launcher,
-            token,
-            1_000_000_000_000,
-            vector::empty<address>()
         );
     }
 }

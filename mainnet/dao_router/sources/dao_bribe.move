@@ -1,5 +1,5 @@
-/// Bribe router - convenience entry point to deposit legacy Coins as bribes.
-/// Withdraws the Coin, converts to paired FungibleAsset, and deposits via restore::deposit_bribe.
+// Bribe router - convenience entry point to deposit legacy Coins as bribes.
+// Withdraws the Coin, converts to paired FungibleAsset, and deposits via restore::deposit_bribe.
 module dao_router::dao_bribe {
     use std::signer;
     use supra_framework::coin;
