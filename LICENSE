@@ -1,0 +1,83 @@
+# Hoglet DAO Smart Contracts License
+### Source-Available & Restricted Commercial Use License
+
+**Copyright (c) 2026 Hoglet DAO. All Rights Reserved.**
+
+---
+
+## Preamble
+
+This software constitutes the core smart contract infrastructure, tokenomics architecture, and governance mechanisms of the **Hoglet DeFi Ecosystem** (comprising the Bonding Curve Launcher, ve(3,3) Governance DAO Factory, and auxiliary modules).
+
+Hoglet DAO is deeply committed to the principles of decentralized governance, trustless architecture, and Web3 ethos. The source-available, restricted commercial terms herein are established as a strategic protective safeguard during the initial ecosystem growth phase to defend the protocol, community liquidity, and governance participants against unauthorized forks, copycats, predatory deployments, and malicious commercial exploitation.
+
+---
+
+## 1. Grant of Limited Permitted Rights
+
+Subject to the terms and restrictions set forth in this License, Hoglet DAO hereby grants any individual or legal entity a non-exclusive, non-transferable, royalty-free, limited license to:
+
+1. **Inspection & Code Review:** Access, read, view, and inspect the source code and associated documentation files in public repositories (e.g., GitHub) or block explorers.
+2. **Security Audits & Vulnerability Research:** Evaluate, trace, analyze, and test the smart contracts for the sole purposes of formal verification, third-party security audits, and responsible security research.
+3. **Bug Bounty Participation:** Identify and report vulnerabilities in accordance with Hoglet DAO's official Security Policy and Bug Bounty program.
+4. **Educational & Academic Use:** Study, analyze, and reference the architectural designs and Move code patterns strictly for non-commercial, personal, or academic educational purposes.
+5. **Local Non-Production Testing:** Run unit tests, simulations, and local execution on sandboxed environments or local mock networks, provided no commercial activity, fee accrual, public service provision, or production deployment occurs.
+
+---
+
+## 2. Explicit Prohibitions & Restrictions
+
+Except as expressly authorized under Section 1 or through a validated on-chain governance exemption (Section 3), **YOU MAY NOT**:
+
+1. **Production & Mainnet Deployment:** Deploy, initialize, run, or operate the smart contracts (or substantial portions thereof) on any public or private Mainnet, layer 1, layer 2, sidechain, app-chain, roll-up, or any production environment of any blockchain (including, without limitation, Supra, Aptos, Sui, EVM-compatible chains, Solana, or Cosmos).
+2. **Commercial Exploitation:** Use the Software for any commercial purpose, monetary gain, fee generation, capital formation, staking pool operation, or financial service provision.
+3. **Competing Projects & Forks:** Copy, duplicate, clone, fork, modify, or adapt the codebase to launch, support, or distribute a competing protocol, decentralized exchange (DEX), token launcher, bonding curve platform, or ve(3,3) governance framework.
+4. **Redistribution & Sublicensing:** Sublicense, lease, rent, sell, assign, transfer, host, or distribute copies or derivative works of the Software to third parties without prior authorization.
+5. **Notice Removal:** Alter, obscure, or remove any copyright notices, license texts, or attribution tags present in the source files, package manifests (`Move.toml`), or repository roots.
+
+---
+
+## 3. Decentralized DAO Governance & Future Transition to Open Source
+
+The exclusive ownership, legal stewardship, and licensing authority over this Software reside irrevocably with the **Hoglet DAO**. 
+
+No individual founder, developer, curator, or core contributor possesses unilateral authority to waive or modify these terms. All exemptions, amendments, or licensing transitions are strictly subject to on-chain governance.
+
+### 3.1. Governance Powers & Licensing Actions
+Through formal, transparent on-chain governance proposals passed and executed under the DAO's constitutional quorum, timelock, and voting rules (via the `herald`, `witness`, `ledger`, and `anchor` modules), the Hoglet DAO reserves the exclusive right to:
+1. **Grant Commercial Exemptions:** Authorize specific partner entities, protocols, or developer teams to deploy, utilize, or integrate specific modules under defined operational conditions.
+2. **Execute License Transition:** Transition the codebase (in whole or in part) from this restricted license to a permissive, OSI-approved open-source license (such as MIT, Apache 2.0, BSL 1.1, or GNU General Public License).
+
+### 3.2. Duration of Restrictions
+Until an official, on-chain governance proposal approving a license transition has been formally proposed, voted on, queued through the timelock, and executed on the blockchain:
+- **This "Source-Available, All Rights Reserved" License remains in full legal force and effect.**
+- Any unauthorized deployment or commercial usage constitutes an actionable infringement of copyright and intellectual property rights.
+
+---
+
+## 4. Trademarks & Brand Assets
+
+This License does not grant any right, title, interest, or license to use the names, trademarks, trade names, service marks, logos, visual assets, or domain names of **Hoglet**, **Hoglet DAO**, or any affiliated community projects, except as necessary to provide fair and reasonable attribution for audit reports or educational discussions.
+
+---
+
+## 5. Responsible Security Disclosure & Bug Bounty
+
+Security researchers and whitehats are welcomed and encouraged to audit this codebase. If you identify a vulnerability or security risk:
+- Do **not** disclose the issue publicly or deploy exploit transactions on live networks.
+- Follow the responsible disclosure guidelines published in the repository or contact the Hoglet DAO security team directly.
+- Valid, responsibly disclosed vulnerabilities may qualify for bug bounty awards as established by the DAO.
+
+---
+
+## 6. Disclaimer of Warranty & Limitation of Liability
+
+THE SOFTWARE IS PROVIDED **"AS IS"**, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, ACCURACY, AND NON-INFRINGEMENT. 
+
+IN NO EVENT SHALL HOGLET DAO, ITS CONTRIBUTORS, DEVELOPERS, TOKEN HOLDERS, AUDITORS, OR AFFILIATES BE LIABLE FOR ANY CLAIM, DAMAGES, LOSS OF FUNDS, ASSET DEPRECIATION, SMART CONTRACT FAILURES, HARDWARE FORKS, RE-ENTRANCY LOSSES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, STRICT LIABILITY, OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE, ITS USE, CODE REVIEW, OR OTHER DEALINGS IN THE SOFTWARE.
+
+SMART CONTRACTS DEPLOYED ON BLOCKCHAIN NETWORKS ARE INHERENTLY EXPERIMENTAL AND SUBJECT TO RISK. ANY INTERACTION WITH THE CODEBASE IS UNDERTAKEN AT THE SOLE RISK OF THE USER.
+
+---
+
+*For inquiries regarding commercial partnerships or governance grants, submit a formal proposal to the Hoglet DAO governance forum.*
