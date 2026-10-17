@@ -246,4 +246,134 @@ module dao_libs::math {
             abort error::invalid_argument(16)
         };
     }
+
+    // ------------------------------------------------------------------
+    // Tests - #[test] functions are stripped from the deploy bytecode.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fun test_mul_div() {
+        assert!(mul_div_u64(10, 3, 2) == 15, 1);
+        assert!(mul_div_u64(1, 1, 1) == 1, 2);
+        assert!(mul_div_u64(1_000_000, 10, 100) == 100_000, 3);
+        assert!(mul_div_u128(10, 3, 2) == 15, 4);
+    }
+
+    #[test]
+    fun test_apply_bps_and_ppm() {
+        assert!(apply_bps(1000, 500) == 50, 1);            // 5%
+        assert!(apply_bps(1000, 10000) == 1000, 2);        // 100%
+        assert!(apply_ppm(1_000_000, 137) == 137, 3);      // 137 ppm
+        assert!(apply_ppm(1_000_000, 1_000_000) == 1_000_000, 4);
+    }
+
+    #[test]
+    fun test_compute_dynamic_threshold() {
+        // 0.0137% of 1,000,000 = 137
+        assert!(compute_dynamic_threshold(1_000_000, 137) == 137, 1);
+        // rounds down to 0 -> clamped to 1
+        assert!(compute_dynamic_threshold(100, 1) == 1, 2);
+        // supply 0 -> clamped to 1
+        assert!(compute_dynamic_threshold(0, 137) == 1, 3);
+    }
+
+    #[test]
+    fun test_rebase_debt_and_pending() {
+        // PRECISION = 1e18, so acc == 1e18 means debt == locked amount.
+        assert!(calculate_rebase_debt(100, 1_000_000_000_000_000_000) == 100, 1);
+        assert!(rebase_pending(100, 1_000_000_000_000_000_000, 40) == 60, 2);
+        // earned <= debt -> floored at 0
+        assert!(rebase_pending(100, 1_000_000_000_000_000_000, 100) == 0, 3);
+        assert!(rebase_pending(100, 1_000_000_000_000_000_000, 500) == 0, 4);
+    }
+
+    #[test]
+    fun test_add_per_share() {
+        // 100 * 1e18 / 1000 = 1e17
+        assert!(add_per_share(100, 1000, 0) == 100_000_000_000_000_000, 1);
+        assert!(add_per_share(0, 1000, 5) == 5, 2);
+    }
+
+    #[test]
+    fun test_calculate_decayed_emission() {
+        assert!(calculate_decayed_emission(1000, 100, 0) == 990, 1);   // 1% decay
+        assert!(calculate_decayed_emission(1000, 100, 995) == 995, 2); // floor at tail
+        assert!(calculate_decayed_emission(1000, 10000, 0) == 0, 3);   // 100% decay
+    }
+
+    #[test]
+    fun test_boosted_working_balance() {
+        assert!(calculate_boosted_working_balance(1000, 0) == 1000, 1);      // no boost
+        assert!(calculate_boosted_working_balance(1000, 5000) == 1500, 2);   // +50%
+    }
+
+    #[test]
+    fun test_calculate_dynamic_quorum() {
+        let empty = std::vector::empty<u128>();
+        assert!(calculate_dynamic_quorum(&empty, 100) == 100, 1); // empty -> default
+
+        // avg 2000 -> raw 1000, clamped to ceiling 200 (2x default)
+        let high = std::vector::empty<u128>();
+        std::vector::push_back(&mut high, 2000);
+        assert!(calculate_dynamic_quorum(&high, 100) == 200, 2);
+
+        // avg 50 -> raw 25 < floor 100 -> 100
+        let low = std::vector::empty<u128>();
+        std::vector::push_back(&mut low, 50);
+        assert!(calculate_dynamic_quorum(&low, 100) == 100, 3);
+
+        // avg 300 -> raw 150, within [100, 200]
+        let mid = std::vector::empty<u128>();
+        std::vector::push_back(&mut mid, 300);
+        assert!(calculate_dynamic_quorum(&mid, 100) == 150, 4);
+    }
+
+    #[test]
+    fun test_reward_math() {
+        // working_supply == 0 -> stored unchanged
+        assert!(calculate_reward_per_token(7, 0, 100, 50, 1000, 0, 1) == 7, 1);
+        // delta 100, rate 10, scale 1, supply 100 -> +10
+        assert!(calculate_reward_per_token(0, 0, 1000, 100, 10, 100, 1) == 10, 2);
+
+        // earned = balance * (rpt - paid) / scale = 100 * 5 / 1 = 500, + stored 5
+        assert!(calculate_user_earned_rewards(15, 10, 100, 5, 1) == 505, 3);
+        // current <= paid -> stored unchanged
+        assert!(calculate_user_earned_rewards(10, 10, 100, 5, 1) == 5, 4);
+    }
+
+    #[test]
+    fun test_assert_bounds_ok() {
+        assert_bounds(1, 1, 10, 99);
+        assert_bounds(5, 1, 10, 99);
+        assert_bounds(10, 1, 10, 99);
+    }
+
+    #[test]
+    #[expected_failure(abort_code = 0x10063)] // invalid_argument(99)
+    fun test_assert_bounds_abort() {
+        assert_bounds(11, 1, 10, 99);
+    }
+
+    #[test]
+    fun test_validate_charter_genesis_ok() {
+        validate_charter_genesis(43200, 86400, 43200, 7, 100, 73, 137);
+    }
+
+    #[test]
+    #[expected_failure(abort_code = 0x10001)] // invalid_argument(1) - voting_delay
+    fun test_validate_charter_genesis_bad_delay() {
+        validate_charter_genesis(1, 86400, 43200, 7, 100, 73, 137);
+    }
+
+    #[test]
+    #[expected_failure(abort_code = 0x10004)] // invalid_argument(4) - proposal_threshold
+    fun test_validate_charter_genesis_zero_threshold() {
+        validate_charter_genesis(43200, 86400, 43200, 7, 100, 73, 0);
+    }
+
+    #[test]
+    #[expected_failure(abort_code = 0x10010)] // invalid_argument(16) - unknown factory key
+    fun test_validate_factory_default_unknown_key() {
+        validate_factory_default(99, 1, 7, 100, 73);
+    }
 }

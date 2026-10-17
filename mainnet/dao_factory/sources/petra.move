@@ -64,6 +64,10 @@ module dao_factory::petra {
     // (28, 29 reserved: E_DAO_ALREADY_ACTIVE / E_DAO_NOT_FOUND removed)
     const E_ALREADY_BLESSED: u64 = 30;
     const E_SMART_TOKEN_NOT_SUPPORTED_FOR_STATIC_DAO: u64 = 31;
+    const E_INVALID_WRAPPER: u64 = 32;
+
+    const DAO_ROUTER: address = @dao_router;
+    const WRAPPER_SEED: vector<u8> = b"HOGLET_DAO_GOV_WRAPPER";
 
     // Constants 
     const MAX_CREATION_FEE: u64 = 1_370_000_000_000; // 13_700 SUPRA (8 decimals)
@@ -363,6 +367,40 @@ module dao_factory::petra {
 
         let config = borrow_global<FactoryConfig>(@dao_factory);
         create_dao_static_internal(creator, governance_token, config, @0x0, option::none());
+    }
+
+    public entry fun create_dao_static_for_wrapper(
+        creator: &signer,
+        wrapped_token: Object<Metadata>,
+        native_token: Object<Metadata>,
+    ) acquires FactoryConfig, DaoRegistry, LauncherRegistry {
+        charge_creation_fee(creator);
+        assert_token_not_claimed(wrapped_token);
+        assert_token_not_claimed(native_token);
+        assert_token_not_registered(native_token);
+
+        // Cryptographic verification: ensure wrapped_token is genuinely created by official dao_wrapper
+        let wrapper_address = account::create_resource_address(&DAO_ROUTER, WRAPPER_SEED);
+        let native_addr = object::object_address(&native_token);
+        let expected_wrapper_address = object::create_object_address(&wrapper_address, bcs::to_bytes(&native_addr));
+        assert!(object::object_address(&wrapped_token) == expected_wrapper_address, error::invalid_argument(E_INVALID_WRAPPER));
+
+        let native_supply_opt = fungible_asset::supply(native_token);
+        assert!(option::is_some(&native_supply_opt), error::invalid_argument(E_SUPPLY_ZERO));
+        let native_supply = *option::borrow(&native_supply_opt);
+        assert!(native_supply > 0, error::invalid_argument(E_SUPPLY_ZERO));
+
+        // Verification: ensure wrapped_token is an uncirculated wrapper and matches native decimals
+        let wrapped_supply_opt = fungible_asset::supply(wrapped_token);
+        assert!(option::is_some(&wrapped_supply_opt) && *option::borrow(&wrapped_supply_opt) == 0, error::invalid_argument(E_SUPPLY_ZERO));
+        assert!(fungible_asset::decimals(wrapped_token) == fungible_asset::decimals(native_token), error::invalid_argument(E_DECIMALS_TOO_HIGH));
+
+        let config = borrow_global<FactoryConfig>(@dao_factory);
+        let dao_address = create_dao_static_internal(creator, wrapped_token, config, @0x0, option::some(native_supply));
+
+        // Register the native token as well so nobody can frontrun or duplicate this DAO
+        let registry = borrow_global_mut<DaoRegistry>(@dao_factory);
+        smart_table::add(&mut registry.registered_tokens, native_token, dao_address);
     }
 
     fun assert_launcher(launcher_address: address) acquires LauncherRegistry {

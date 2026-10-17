@@ -35,6 +35,12 @@ module dao_router::dao_setup {
         if (option::is_some(&petra::get_dao_for_token(governance_token))) {
             abort error::already_exists(E_DAO_ALREADY_EXISTS)
         };
+        if (dao_wrapper::is_wrapper_registered_for_native(governance_token)) {
+            let wrapped = dao_wrapper::get_wrapper_for_fa(governance_token);
+            if (option::is_some(&petra::get_dao_for_token(wrapped))) {
+                abort error::already_exists(E_DAO_ALREADY_EXISTS)
+            };
+        };
 
         if (hoglet_core::is_launcher_project(object::object_address(&governance_token))) {
             // Launcher-born: only its own gate (meme + HODL finished) authorizes the hand-over.
@@ -52,7 +58,7 @@ module dao_router::dao_setup {
                 if (option::is_some(&petra::get_dao_for_token(wrapped_token))) {
                     abort error::already_exists(E_DAO_ALREADY_EXISTS)
                 };
-                petra::create_dao_static(user, wrapped_token);
+                petra::create_dao_static_for_wrapper(user, wrapped_token, governance_token);
                 (wrapped_token, true)
             } else {
                 // Heritage / Clean FA: direct petra static door

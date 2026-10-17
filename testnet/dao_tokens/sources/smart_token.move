@@ -517,4 +517,89 @@ module dao_tokens::smart_token {
         
         fungible_asset::deposit_with_ref(transfer_ref, store, fa);
     }
+
+    // ------------------------------------------------------------------
+    // Tests - #[test_only] (stripped at deploy).
+    // ------------------------------------------------------------------
+
+    #[test_only]
+    use supra_framework::account;
+
+    // Boots the module + a brand-new FA smart token owned by `dao`.
+    // `name` must be unique per test (the VM shares global state).
+    #[test_only]
+    fun setup_token(deployer: &signer, dao: &signer, name: vector<u8>): address acquires HookRefs, DaoTokenConfig {
+        account::create_account_for_test(std::signer::address_of(deployer));
+        if (!exists<HookRefs>(@dao_tokens)) { init_module(deployer); };
+
+        let token_ref = object::create_named_object(deployer, name);
+        primary_fungible_store::create_primary_store_enabled_fungible_asset(
+            &token_ref,
+            option::none(),
+            string::utf8(b"Test"),
+            string::utf8(b"TST"),
+            8,
+            string::utf8(b"icon"),
+            string::utf8(b"project")
+        );
+        let token_addr = object::address_from_constructor_ref(&token_ref);
+
+        let cap = initialize(&token_ref);
+        set_dao_admin(cap, std::signer::address_of(dao));
+        token_addr
+    }
+
+    #[test(deployer = @dao_tokens, dao = @0xDA0)]
+    fun test_initialize_and_toggle_tax(deployer: &signer, dao: &signer) acquires HookRefs, DaoTokenConfig {
+        let token_addr = setup_token(deployer, dao, b"TEST_TOKEN_A");
+
+        assert!(is_initialized(token_addr), 1);
+        assert!(!is_tax_active(token_addr), 2);
+
+        update_single_param(token_addr, dao, 0, 1); // toggle tax on
+        assert!(is_tax_active(token_addr), 3);
+        update_single_param(token_addr, dao, 0, 0); // toggle tax off
+        assert!(!is_tax_active(token_addr), 4);
+    }
+
+    #[test(deployer = @dao_tokens, dao = @0xDA0, hacker = @0xBAD)]
+    #[expected_failure(abort_code = 0x50001)] // permission_denied(E_NOT_AUTHORIZED=1)
+    fun test_hacker_cannot_update(deployer: &signer, dao: &signer, hacker: &signer) acquires HookRefs, DaoTokenConfig {
+        let token_addr = setup_token(deployer, dao, b"TEST_TOKEN_B");
+        update_single_param(token_addr, hacker, 0, 1); // not the DAO admin -> abort
+    }
+
+    #[test(deployer = @dao_tokens, dao = @0xDA0)]
+    #[expected_failure(abort_code = 0x10005)] // invalid_argument(E_INVALID_FEE=5)
+    fun test_buy_tax_too_high(deployer: &signer, dao: &signer) acquires HookRefs, DaoTokenConfig {
+        let token_addr = setup_token(deployer, dao, b"TEST_TOKEN_C");
+        update_single_param(token_addr, dao, 3, 2000); // > 1000 bps -> abort
+    }
+
+    #[test(deployer = @dao_tokens, dao = @0xDA0)]
+    #[expected_failure(abort_code = 0x10005)] // invalid_argument(E_INVALID_FEE=5)
+    fun test_combined_tax_cap(deployer: &signer, dao: &signer) acquires HookRefs, DaoTokenConfig {
+        let token_addr = setup_token(deployer, dao, b"TEST_TOKEN_D");
+        update_single_param(token_addr, dao, 3, 600); // buy 6%
+        update_single_param(token_addr, dao, 4, 600); // sell 6% (sum 12% <= 15%)
+        update_single_param(token_addr, dao, 5, 600); // +auto 6% = 18% > 15% cap -> abort
+    }
+
+    #[test(deployer = @dao_tokens, dao = @0xDA0)]
+    fun test_blacklist(deployer: &signer, dao: &signer) acquires HookRefs, DaoTokenConfig {
+        let token_addr = setup_token(deployer, dao, b"TEST_TOKEN_BL");
+        account::create_account_for_test(@0xBAD);
+
+        // Listed but the toggle is off -> the read-only view stays false.
+        update_blacklist(token_addr, dao, @0xBAD, true);
+        assert!(!is_blacklisted(token_addr, @0xBAD), 1);
+
+        // Activate the blacklist toggle -> now effective.
+        update_single_param(token_addr, dao, 2, 1);
+        assert!(is_blacklisted(token_addr, @0xBAD), 2);
+
+        // Remove from the list -> false again.
+        update_blacklist(token_addr, dao, @0xBAD, false);
+        assert!(!is_blacklisted(token_addr, @0xBAD), 3);
+    }
 }

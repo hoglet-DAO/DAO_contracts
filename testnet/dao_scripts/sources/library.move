@@ -273,4 +273,101 @@ module dao_scripts::library {
     public fun get_count(): u64 acquires LibraryConfig {
         borrow_global<LibraryConfig>(@dao_scripts).next_id - 1
     }
+
+    // ------------------------------------------------------------------
+    // Tests - #[test_only] (stripped from the deploy bytecode).
+    // ------------------------------------------------------------------
+
+    #[test_only]
+    use supra_framework::account;
+
+    #[test_only]
+    const TEST_CID: vector<u8> = b"QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG";
+
+    #[test_only]
+    fun hash32(seed: u8): vector<u8> {
+        let h = vector::empty<u8>();
+        let i = 0;
+        while (i < 32) { vector::push_back(&mut h, seed + (i as u8)); i = i + 1; };
+        h
+    }
+
+    #[test_only]
+    fun setup(deployer: &signer) {
+        // The Move test VM has no clock: bootstrap timestamp first.
+        let fw = account::create_signer_for_test(@supra_framework);
+        timestamp::set_time_has_started_for_testing(&fw);
+        if (!exists<LibraryConfig>(@dao_scripts)) {
+            init_module(deployer);
+        };
+    }
+
+    // Shared with vault.move tests (same package).
+    #[test_only]
+    public fun setup_for_test(deployer: &signer) { setup(deployer); }
+
+    #[test_only]
+    public fun submit_from_test(submitter: &signer, seed: u8) acquires LibraryConfig {
+        submit_script(submitter, hash32(seed), string::utf8(TEST_CID), 0, false);
+    }
+
+    #[test_only]
+    public fun is_audited_from_test(script_id: u64): bool acquires LibraryConfig { is_audited(script_id) }
+
+    #[test(deployer = @dao_scripts, user = @0x1234, admin = @HOGL)]
+    fun test_submit_and_views(deployer: &signer, user: &signer, admin: &signer) acquires LibraryConfig {
+        setup(deployer);
+        account::create_account_for_test(signer::address_of(user));
+        account::create_account_for_test(signer::address_of(admin));
+
+        let h = hash32(10);
+        submit_script(user, h, string::utf8(TEST_CID), 2, false);
+
+        assert!(script_exists(1), 1);
+        assert!(get_execution_hash(1) == h, 2);
+        assert!(!is_audited(1), 3);
+        assert!(!has_args(1), 4);
+        assert!(get_count() == 1, 5);
+        assert!(get_admin() == @HOGL, 6);
+
+        mark_audited(admin, 1, true);
+        assert!(is_audited(1), 7);
+        mark_audited(admin, 1, false);
+        assert!(!is_audited(1), 8);
+    }
+
+    #[test(deployer = @dao_scripts, user = @0x1234)]
+    #[expected_failure(abort_code = 0x10002)] // invalid_argument(E_INVALID_HASH_LENGTH=2)
+    fun test_submit_bad_hash_length(deployer: &signer, user: &signer) acquires LibraryConfig {
+        setup(deployer);
+        account::create_account_for_test(signer::address_of(user));
+        submit_script(user, vector[1u8, 2, 3], string::utf8(TEST_CID), 0, false);
+    }
+
+    #[test(deployer = @dao_scripts, user = @0x1234)]
+    #[expected_failure(abort_code = 0x10006)] // invalid_argument(E_INVALID_CID=6)
+    fun test_submit_bad_cid(deployer: &signer, user: &signer) acquires LibraryConfig {
+        setup(deployer);
+        account::create_account_for_test(signer::address_of(user));
+        submit_script(user, hash32(1), string::utf8(b"short"), 0, false);
+    }
+
+    #[test(deployer = @dao_scripts, user = @0x1234)]
+    #[expected_failure(abort_code = 0x10007)] // invalid_argument(E_DUPLICATE=7)
+    fun test_submit_duplicate_rejected(deployer: &signer, user: &signer) acquires LibraryConfig {
+        setup(deployer);
+        account::create_account_for_test(signer::address_of(user));
+        let h = hash32(5);
+        submit_script(user, h, string::utf8(TEST_CID), 0, false);
+        submit_script(user, h, string::utf8(TEST_CID), 0, false); // same bytecode -> abort
+    }
+
+    #[test(deployer = @dao_scripts, user = @0x1234)]
+    #[expected_failure(abort_code = 0x50001)] // permission_denied(E_NOT_ADMIN=1)
+    fun test_mark_audited_not_admin(deployer: &signer, user: &signer) acquires LibraryConfig {
+        setup(deployer);
+        account::create_account_for_test(signer::address_of(user));
+        submit_from_test(user, 7);
+        mark_audited(user, 1, true); // non-admin -> abort
+    }
 }

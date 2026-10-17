@@ -208,4 +208,18 @@ module dao_tax_router::tax_router {
             dispatchable_fungible_asset::deposit(store, fa);
         };
     }
+
+    // ------------------------------------------------------------------
+    // Tests - #[test_only] (stripped at deploy).
+    // ------------------------------------------------------------------
+
+    #[test]
+    fun test_no_router_defaults() acquires TaxFreeRouter {
+        // A DAO without a TaxFreeRouter (plain-FA DAOs, e.g. HOG) must report no
+        // router, an empty whitelist and the master address as not whitelisted.
+        let dao = @0xBEEF;
+        assert!(!has_tax_free_router(dao), 1);
+        assert!(!is_whitelisted_router(dao, @0xBEEF), 2);
+        assert!(vector::length(&get_whitelisted_routers(dao)) == 0, 3);
+    }
 }

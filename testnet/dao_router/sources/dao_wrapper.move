@@ -432,4 +432,44 @@ module dao_router::dao_wrapper {
     public fun get_admin(): address acquires WrapperRegistry {
         borrow_global<WrapperRegistry>(@dao_router).admin
     }
+
+    // ------------------------------------------------------------------
+    // Tests - #[test_only] (stripped at deploy).
+    // ------------------------------------------------------------------
+
+    #[test_only]
+    fun setup(router: &signer) {
+        if (!exists<WrapperRegistry>(@dao_router)) { init_module(router); };
+    }
+
+    #[test(router = @dao_router, admin = @HOGL)]
+    fun test_wrapper_fees(router: &signer, admin: &signer) acquires WrapperRegistry {
+        setup(router);
+        account::create_account_for_test(signer::address_of(admin));
+
+        assert!(get_flash_loan_fee_bps() == DEFAULT_FLASH_LOAN_FEE_BPS, 1);
+        // expected_fee rounds UP to the next unit.
+        assert!(expected_fee(1_000_000) == ((1_000_000 * DEFAULT_FLASH_LOAN_FEE_BPS + 9999) / 10000), 2);
+        assert!(get_admin() == @HOGL, 3);
+
+        // admin lowers the fee to 0.5%
+        set_fee_bps(admin, 50);
+        assert!(get_flash_loan_fee_bps() == 50, 4);
+        assert!(expected_fee(1_000_000) == 5000, 5);
+    }
+
+    #[test(router = @dao_router, admin = @HOGL)]
+    #[expected_failure(abort_code = 0x10066)] // invalid_argument(ERROR_INVALID_REPAYMENT=102)
+    fun test_wrapper_fee_cap(router: &signer, admin: &signer) acquires WrapperRegistry {
+        setup(router);
+        account::create_account_for_test(signer::address_of(admin));
+        set_fee_bps(admin, 101); // > 100 bps -> abort
+    }
+
+    #[test(router = @dao_router, not_admin = @0xBAD)]
+    #[expected_failure(abort_code = 0x50067)] // permission_denied(ERROR_NOT_ADMIN=103)
+    fun test_wrapper_fee_not_admin(router: &signer, not_admin: &signer) acquires WrapperRegistry {
+        setup(router);
+        set_fee_bps(not_admin, 10); // not the registry admin -> abort
+    }
 }

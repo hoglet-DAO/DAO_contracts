@@ -84,4 +84,47 @@ module dao_scripts::vault {
         // Unset: fall back to the global audit signal (dynamic fast-path).
         library::is_audited(script_id)
     }
+
+    // ------------------------------------------------------------------
+    // Tests - #[test_only] (stripped from the deploy bytecode).
+    // ------------------------------------------------------------------
+
+    #[test_only]
+    use supra_framework::account;
+
+    #[test_only]
+    fun setup(deployer: &signer, user: &signer) {
+        // Library must be bootstrapped (script_exists gates the vault writes).
+        library::setup_for_test(deployer);
+        if (!exists<VaultState>(@dao_scripts)) { init_module(deployer); };
+        account::create_account_for_test(signer::address_of(user));
+        library::submit_from_test(user, 3); // creates script_id 1
+    }
+
+    #[test(deployer = @dao_scripts, user = @0x1234)]
+    fun test_vault_tristate(deployer: &signer, user: &signer) acquires VaultState {
+        setup(deployer, user);
+        let dao = signer::address_of(user);
+
+        // unset + not audited -> not approved
+        assert!(!is_approved(dao, 1), 1);
+
+        // allow -> approved even though the library does not mark it audited
+        add(user, 1);
+        assert!(is_approved(dao, 1), 2);
+
+        // block -> not approved
+        remove(user, 1);
+        assert!(!is_approved(dao, 1), 3);
+
+        // another DAO's vault is independent (unset -> follows global audit = false)
+        assert!(!is_approved(@0xBEEF, 1), 4);
+    }
+
+    #[test(deployer = @dao_scripts, user = @0x1234)]
+    #[expected_failure(abort_code = 0x10001)] // invalid_argument(E_SCRIPT_NOT_FOUND=1)
+    fun test_add_missing_script(deployer: &signer, user: &signer) acquires VaultState {
+        setup(deployer, user);
+        add(user, 999); // never registered in the library -> abort
+    }
 }
