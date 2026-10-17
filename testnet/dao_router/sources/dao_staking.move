@@ -26,32 +26,74 @@ module dao_router::dao_staking {
 
     const E_DAO_NOT_FOUND: u64 = 1;
 
-    // Resolves the DAO that owns `gov_token`.
-    // If `gov_token` is already the DAO token (direct static or wrapped), returns that DAO.
-    // If `gov_token` has no direct DAO, but is registered in `dao_wrapper` and its wrapped FA owns a DAO,
-    // returns (dao_address, wrapped_metadata, true).
-    fun resolve_dao_and_token(gov_token: Object<Metadata>): (address, Object<Metadata>, bool) {
-        let dao_opt = petra::get_dao_for_token(gov_token);
-        if (option::is_some(&dao_opt)) {
-            (option::extract(&mut dao_opt), gov_token, false)
-        } else if (dao_wrapper::is_wrapper_registered_for_native(gov_token)) {
-            let wrapped_meta = dao_wrapper::get_wrapper_for_fa(gov_token);
-            let wrapped_dao_opt = petra::get_dao_for_token(wrapped_meta);
-            if (option::is_some(&wrapped_dao_opt)) {
-                (option::extract(&mut wrapped_dao_opt), wrapped_meta, true)
+    // Resolves the DAO and tokens for staking:
+    // Returns (dao_address, source_token_to_withdraw, target_token_for_legacy, needs_wrap)
+    fun resolve_dao_and_tokens(
+        user_addr: address,
+        token_input: Object<Metadata>,
+        amount: u64
+    ): (address, Object<Metadata>, Object<Metadata>, bool) {
+        if (dao_wrapper::is_wrapper_registered_for_native(token_input)) {
+            // Case 1: Caller provided the native token of a wrapped DAO
+            let wrapped_meta = dao_wrapper::get_wrapper_for_fa(token_input);
+            let dao_opt = petra::get_dao_for_token(wrapped_meta);
+            if (option::is_some(&dao_opt)) {
+                (option::extract(&mut dao_opt), token_input, wrapped_meta, true)
             } else {
                 abort error::not_found(E_DAO_NOT_FOUND)
             }
+        } else if (dao_wrapper::is_wrapper_fa(token_input)) {
+            // Case 2: Caller provided the wrapper token (gwTOKEN)
+            let dao_opt = petra::get_dao_for_token(token_input);
+            if (option::is_none(&dao_opt)) {
+                abort error::not_found(E_DAO_NOT_FOUND)
+            };
+            let dao_addr = option::extract(&mut dao_opt);
+
+            // Check if user already holds enough wrapped tokens in primary store
+            let user_wrapped_bal = if (primary_fungible_store::primary_store_exists(user_addr, token_input)) {
+                primary_fungible_store::balance(user_addr, token_input)
+            } else {
+                0
+            };
+            if (user_wrapped_bal >= amount) {
+                // User already holds wrapped tokens, no auto-wrap needed
+                (dao_addr, token_input, token_input, false)
+            } else {
+                // User holds native tokens, auto-wrap from native!
+                let native_meta = dao_wrapper::get_original_fa(token_input);
+                (dao_addr, native_meta, token_input, true)
+            }
         } else {
-            abort error::not_found(E_DAO_NOT_FOUND)
+            // Case 3: Standard clean FA or launcher token
+            let dao_opt = petra::get_dao_for_token(token_input);
+            if (option::is_some(&dao_opt)) {
+                (option::extract(&mut dao_opt), token_input, token_input, false)
+            } else {
+                abort error::not_found(E_DAO_NOT_FOUND)
+            }
         }
     }
 
     // Resolves the DAO that owns `gov_token`, aborting when the token has no
     // DAO yet (it must be activated before it can be locked).
     fun resolve_dao(gov_token: Object<Metadata>): address {
-        let (dao_addr, _, _) = resolve_dao_and_token(gov_token);
-        dao_addr
+        if (dao_wrapper::is_wrapper_registered_for_native(gov_token)) {
+            let wrapped_meta = dao_wrapper::get_wrapper_for_fa(gov_token);
+            let dao_opt = petra::get_dao_for_token(wrapped_meta);
+            if (option::is_some(&dao_opt)) {
+                option::extract(&mut dao_opt)
+            } else {
+                abort error::not_found(E_DAO_NOT_FOUND)
+            }
+        } else {
+            let dao_opt = petra::get_dao_for_token(gov_token);
+            if (option::is_some(&dao_opt)) {
+                option::extract(&mut dao_opt)
+            } else {
+                abort error::not_found(E_DAO_NOT_FOUND)
+            }
+        }
     }
 
     // Universal view function for frontend: resolves the DAO address from either the
@@ -78,11 +120,11 @@ module dao_router::dao_staking {
         amount: u64,
         lock_epochs: u64,
     ) {
-        let (dao_address, target_token, needs_wrap) = resolve_dao_and_token(gov_token);
         let user_addr = signer::address_of(user);
+        let (dao_address, source_token, target_token, needs_wrap) = resolve_dao_and_tokens(user_addr, gov_token, amount);
 
         let lock_amount = if (needs_wrap) {
-            let from_store = primary_fungible_store::ensure_primary_store_exists(user_addr, gov_token);
+            let from_store = primary_fungible_store::ensure_primary_store_exists(user_addr, source_token);
             let native_fa = dispatchable_fungible_asset::withdraw(user, from_store, amount);
             let wrapped_fa = dao_wrapper::wrap_fa(native_fa);
             let actual_minted = fungible_asset::amount(&wrapped_fa);

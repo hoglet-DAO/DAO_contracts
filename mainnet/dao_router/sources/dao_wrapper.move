@@ -27,7 +27,7 @@ module dao_router::dao_wrapper {
     use supra_framework::event;
 
     use aptos_std::smart_table::{Self, SmartTable};
-    use std::string::{Self, String};
+    use std::string;
     use std::option;
     use std::signer;
     use std::error;

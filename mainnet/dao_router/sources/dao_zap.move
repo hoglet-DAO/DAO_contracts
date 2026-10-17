@@ -42,10 +42,7 @@ module dao_router::dao_zap {
     // If `gov_token` has no direct DAO, but is registered in `dao_wrapper` and its wrapped FA owns a DAO,
     // returns (dao_address, wrapped_metadata, true).
     fun resolve_dao_and_token(gov_token: Object<Metadata>): (address, Object<Metadata>, bool) {
-        let dao_opt = petra::get_dao_for_token(gov_token);
-        if (option::is_some(&dao_opt)) {
-            (option::extract(&mut dao_opt), gov_token, false)
-        } else if (dao_wrapper::is_wrapper_registered_for_native(gov_token)) {
+        if (dao_wrapper::is_wrapper_registered_for_native(gov_token)) {
             let wrapped_meta = dao_wrapper::get_wrapper_for_fa(gov_token);
             let wrapped_dao_opt = petra::get_dao_for_token(wrapped_meta);
             if (option::is_some(&wrapped_dao_opt)) {
@@ -54,7 +51,12 @@ module dao_router::dao_zap {
                 abort error::not_found(E_DAO_NOT_FOUND)
             }
         } else {
-            abort error::not_found(E_DAO_NOT_FOUND)
+            let dao_opt = petra::get_dao_for_token(gov_token);
+            if (option::is_some(&dao_opt)) {
+                (option::extract(&mut dao_opt), gov_token, false)
+            } else {
+                abort error::not_found(E_DAO_NOT_FOUND)
+            }
         }
     }
 
