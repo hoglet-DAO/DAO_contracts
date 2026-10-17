@@ -61,8 +61,9 @@ module dao_factory::petra {
     const E_NOT_INFLATIONARY: u64 = 25;
     const E_INVALID_GRACE_PERIOD: u64 = 26;
     const E_INFLATIONARY_REQUIRES_SMART_TOKEN: u64 = 27;
-    const E_DAO_ALREADY_ACTIVE: u64 = 28;
-    const E_DAO_NOT_FOUND: u64 = 29;
+    // (28, 29 reserved: E_DAO_ALREADY_ACTIVE / E_DAO_NOT_FOUND removed)
+    const E_ALREADY_BLESSED: u64 = 30;
+    const E_SMART_TOKEN_NOT_SUPPORTED_FOR_STATIC_DAO: u64 = 31;
 
     // Constants 
     const MAX_CREATION_FEE: u64 = 1_370_000_000_000; // 13_700 SUPRA (8 decimals)
@@ -132,19 +133,6 @@ module dao_factory::petra {
         admin: address,
         epoch: u64,
     }
-    #[event]
-    struct StaticDaoApproved has drop, store {
-        admin: address,
-        dao_address: address,
-        governance_token: address,
-    }
-
-    #[event]
-    struct StaticDaoRejected has drop, store {
-        admin: address,
-        dao_address: address,
-        governance_token: address,
-    }
 
     // Initialization 
 
@@ -152,10 +140,10 @@ module dao_factory::petra {
     fun init_module(admin: &signer) {
         move_to(admin, FactoryConfig {
             creation_fee: 1_370_000_000, // 13.7 APT/SUPRA
-            fee_receiver: @FACTORY,
+            fee_receiver: @HOGL,
             admin_address: @dao_genesis,
             pending_admin_address: @0x0,
-            curator_address: @FACTORY,
+            curator_address: @HOGL,
             default_voting_delay: charter::min_delay_seconds(), // Using SSOT from charter
             default_voting_period: 604800, // 1 week is standard
             default_proposal_threshold_ppm: 137, // 137 PPM = 0.0137% of Supply
@@ -250,6 +238,15 @@ module dao_factory::petra {
         assert_admin(admin);
         let config = borrow_global_mut<FactoryConfig>(@dao_factory);
         config.curator_address = new_curator;
+    }
+
+    // Rescue function: If the curator assigned to an unblessed static DAO fails or is compromised,
+    // the Factory Admin can reassign it before blessing. Once blessed, the DAO is sovereign
+    // and reassign_curator aborts with E_ALREADY_BLESSED.
+    public entry fun reassign_curator(admin: &signer, dao_address: address, new_curator: address) acquires FactoryConfig {
+        assert_admin(admin);
+        assert!(!charter::is_blessed(dao_address), error::invalid_state(E_ALREADY_BLESSED));
+        charter::update_guardian_by_factory(dao_address, option::some(new_curator));
     }
 
     fun set_launcher_status(admin: &signer, launcher: address, status: bool) acquires FactoryConfig, LauncherRegistry {
@@ -458,6 +455,17 @@ module dao_factory::petra {
         expected_supply_opt: option::Option<u128>,
     ): address acquires DaoRegistry {
         assert_token_not_registered(governance_token);
+        assert!(
+            !smart_token::is_initialized(object::object_address(&governance_token)),
+            error::invalid_argument(E_SMART_TOKEN_NOT_SUPPORTED_FOR_STATIC_DAO)
+        );
+        // Universal dispatch probe: ensures third-party tokens have NO custom hooks whatsoever
+        let probe_constr = object::create_object_from_account(creator);
+        let probe_store = fungible_asset::create_store(&probe_constr, governance_token);
+        assert!(
+            !fungible_asset::is_store_dispatchable(probe_store),
+            error::invalid_argument(E_SMART_TOKEN_NOT_SUPPORTED_FOR_STATIC_DAO)
+        );
         let (dao_signer, signer_cap, dao_address, name, current_supply) = prepare_dao_creation(creator, governance_token, expected_supply_opt);
 
         initialize_core_modules(&dao_signer, signer_cap, name, config, current_supply, launcher_address, false, governance_token);
@@ -590,39 +598,6 @@ module dao_factory::petra {
         jubilee::sync_clock(dao_address);
     }
 
-    // M-06 Defense: Approve and activate a pending static DAO (Called by Factory Sentinel / Admin)
-    public entry fun approve_static_dao(
-        admin: &signer,
-        dao_address: address
-    ) acquires FactoryConfig {
-        assert_admin(admin);
-        assert!(!charter::is_active(dao_address), error::invalid_state(E_DAO_ALREADY_ACTIVE));
-        charter::set_active_by_factory(dao_address);
-                let governance_token = legacy::get_token_metadata_address(dao_address);
-        event::emit(StaticDaoApproved {
-            admin: signer::address_of(admin),
-            dao_address,
-            governance_token,
-        });
-    }
-
-    // M-06 Defense: Reject and unbind an inactive static DAO squatting or fraudulently claiming a token
-    public entry fun reject_static_dao(
-        admin: &signer,
-        governance_token: Object<Metadata>
-    ) acquires FactoryConfig, DaoRegistry {
-        assert_admin(admin);
-        let registry = borrow_global_mut<DaoRegistry>(@dao_factory);
-        assert!(smart_table::contains(&registry.registered_tokens, governance_token), error::not_found(E_DAO_NOT_FOUND));
-        let dao_address = *smart_table::borrow(&registry.registered_tokens, governance_token);
-        assert!(!charter::is_inflationary(dao_address), error::invalid_state(E_NOT_INFLATIONARY));
-        smart_table::remove(&mut registry.registered_tokens, governance_token);
-        event::emit(StaticDaoRejected {
-            admin: signer::address_of(admin),
-            dao_address,
-            governance_token: object::object_address(&governance_token),
-        });
-    }
 
     // Activates ONLY the gauge of the pool that received seed liquidity at
     // migration time. Birth gauges start inactive (at deploy it is not yet
@@ -691,6 +666,7 @@ module dao_factory::petra {
         assert_launcher_of_dao(launcher_signer, dao_address);
         assert_valid_dao(dao_address, governance_token);
         assert!(!charter::is_inflationary(dao_address), error::invalid_state(E_NOT_INFLATIONARY));
+        assert!(!charter::is_blessed(dao_address), error::invalid_state(E_ALREADY_BLESSED));
 
         let config = borrow_global<FactoryConfig>(@dao_factory);
         recalculate_threshold(dao_address, governance_token, config.default_proposal_threshold_ppm);

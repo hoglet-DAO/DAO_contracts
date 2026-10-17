@@ -5,51 +5,21 @@
 // one-click flow (Aerodrome/Velodrome "buy & lock", Convex-style zap): the
 // user pays with a native Coin or any FA and ends up with a lock, without an
 // intermediate manual step.
+//
+// Supports wrapped static DAOs: automatically wraps native tokens bought on the AMM
+// before depositing into veNFT escrow.
 module dao_router::dao_zap {
-    // ==================================================================
-    // [FLOW] The caller passes the governance token + payment amount; the
-    // router:
-    //
-    //   1. resolves the token's OWNED DAO via petra::get_dao_for_token (the
-    //      module that owns that knowledge, same pattern as dao_setup);
-    //   2. snapshots the user's primary-store balance;
-    //   3. routes the payment through the PUBLISHED spike AMM router (its own
-    //      guards, fees and slippage rules apply  single source of truth, no
-    //      duplicated swap logic);
-    //   4. measures the balance DELTA  the honest amount bought, immune to
-    //      fee splits, excess-fill trims and dispatch tax hooks, and never
-    //      needs duplicated curve math;
-    //   5. locks that delta with legacy::create_lock (its own guards apply:
-    //      sentinel pause, blacklist, MIN/MAX epochs).
-    //
-    //   Every failure aborts the whole transaction: atomic.
-    //
-    // [SCOPE] Post-migration / heritage tokens only (the DAO exists and the
-    //   token trades on the AMM). There is no pre-activation variant: before
-    //   `activate_delayed_dao` no VeTokenRegistry exists, so `create_lock`
-    //   would abort  buying during the curve stays in the frontend
-    //   (GetTokenModal). Locking a token the user ALREADY holds is
-    //   dao_staking::create_lock.
-    //
-    // [DEPENDENCY DAG] dao_router_v3 -> spike_amm (interface stub vendored at
-    //   contracts/amm_interfaces, bound to the published AMM address) and ->
-    //   dao_factory. spike_amm never depends on dao_factory (acyclic).
-    //   dao_factory core stays byte-neutral.
-    //
-    // [BALANCE-DELTA SAFETY] `read_balance` returns 0 for owners without a
-    //   primary store (first-time buyers). The delta guard rejects a
-    //   non-positive net amount; create_lock's own zero-amount guard is the
-    //   belt to this suspenders.
-    // ==================================================================
     use std::error;
     use std::option;
     use std::signer;
     use std::vector;
     use dao_factory::petra;
     use dao_factory::legacy;
+    use dao_router::dao_wrapper;
     use supra_framework::object::{Self, Object};
-    use supra_framework::fungible_asset::Metadata;
+    use supra_framework::fungible_asset::{Self, Metadata};
     use supra_framework::primary_fungible_store;
+    use supra_framework::dispatchable_fungible_asset;
     use spike_amm::amm_router;
 
     const E_DAO_NOT_FOUND: u64 = 1;
@@ -67,15 +37,30 @@ module dao_router::dao_zap {
         }
     }
 
-    // The DAO that owns `gov_token` (the owning module's registry is the
-    // single source of truth; one-DAO-per-token).
-    fun resolve_dao(gov_token: Object<Metadata>): address {
+    // Resolves the DAO that owns `gov_token`.
+    // If `gov_token` is already the DAO token, returns that DAO.
+    // If `gov_token` has no direct DAO, but is registered in `dao_wrapper` and its wrapped FA owns a DAO,
+    // returns (dao_address, wrapped_metadata, true).
+    fun resolve_dao_and_token(gov_token: Object<Metadata>): (address, Object<Metadata>, bool) {
         let dao_opt = petra::get_dao_for_token(gov_token);
         if (option::is_some(&dao_opt)) {
-            option::extract(&mut dao_opt)
+            (option::extract(&mut dao_opt), gov_token, false)
+        } else if (dao_wrapper::is_wrapper_registered_for_native(gov_token)) {
+            let wrapped_meta = dao_wrapper::get_wrapper_for_fa(gov_token);
+            let wrapped_dao_opt = petra::get_dao_for_token(wrapped_meta);
+            if (option::is_some(&wrapped_dao_opt)) {
+                (option::extract(&mut wrapped_dao_opt), wrapped_meta, true)
+            } else {
+                abort error::not_found(E_DAO_NOT_FOUND)
+            }
         } else {
             abort error::not_found(E_DAO_NOT_FOUND)
         }
+    }
+
+    fun resolve_dao(gov_token: Object<Metadata>): address {
+        let (dao_addr, _, _) = resolve_dao_and_token(gov_token);
+        dao_addr
     }
 
     // The route must END at the governance token: the last hop is always the
@@ -106,7 +91,7 @@ module dao_router::dao_zap {
         assert!(amount > 0, error::invalid_argument(E_ZERO_AMOUNT));
         let gov_addr = object::object_address(&gov_token);
         assert_path_ends_at(&path, gov_addr);
-        let dao_address = resolve_dao(gov_token);
+        let (dao_address, target_token, needs_wrap) = resolve_dao_and_token(gov_token);
 
         let user_addr = signer::address_of(user);
         let before = read_balance(user_addr, gov_token);
@@ -122,7 +107,20 @@ module dao_router::dao_zap {
 
         let delta = read_balance(user_addr, gov_token) - before;
         assert!(delta > 0, error::out_of_range(E_NOTHING_TO_LOCK));
-        let _nft_object = legacy::create_lock(user, dao_address, delta, lock_epochs);
+
+        let lock_amount = if (needs_wrap) {
+            let from_store = primary_fungible_store::ensure_primary_store_exists(user_addr, gov_token);
+            let native_fa = dispatchable_fungible_asset::withdraw(user, from_store, delta);
+            let wrapped_fa = dao_wrapper::wrap_fa(native_fa);
+            let actual_minted = fungible_asset::amount(&wrapped_fa);
+            let to_store = primary_fungible_store::ensure_primary_store_exists(user_addr, target_token);
+            dispatchable_fungible_asset::deposit(to_store, wrapped_fa);
+            actual_minted
+        } else {
+            delta
+        };
+
+        let _nft_object = legacy::create_lock(user, dao_address, lock_amount, lock_epochs);
     }
 
     // Claims `amount` of `gov_token` paying with any FA in `path` and locks
@@ -147,7 +145,7 @@ module dao_router::dao_zap {
             vector::length(&path) >= 2,
             error::invalid_argument(E_INVALID_PATH)
         );
-        let dao_address = resolve_dao(gov_token);
+        let (dao_address, target_token, needs_wrap) = resolve_dao_and_token(gov_token);
 
         let user_addr = signer::address_of(user);
         let before = read_balance(user_addr, gov_token);
@@ -163,6 +161,19 @@ module dao_router::dao_zap {
 
         let delta = read_balance(user_addr, gov_token) - before;
         assert!(delta > 0, error::out_of_range(E_NOTHING_TO_LOCK));
-        let _nft_object = legacy::create_lock(user, dao_address, delta, lock_epochs);
+
+        let lock_amount = if (needs_wrap) {
+            let from_store = primary_fungible_store::ensure_primary_store_exists(user_addr, gov_token);
+            let native_fa = dispatchable_fungible_asset::withdraw(user, from_store, delta);
+            let wrapped_fa = dao_wrapper::wrap_fa(native_fa);
+            let actual_minted = fungible_asset::amount(&wrapped_fa);
+            let to_store = primary_fungible_store::ensure_primary_store_exists(user_addr, target_token);
+            dispatchable_fungible_asset::deposit(to_store, wrapped_fa);
+            actual_minted
+        } else {
+            delta
+        };
+
+        let _nft_object = legacy::create_lock(user, dao_address, lock_amount, lock_epochs);
     }
 }

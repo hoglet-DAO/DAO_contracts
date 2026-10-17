@@ -4,7 +4,8 @@ module dao_factory::charter {
     friend dao_factory::anchor;
 
     use std::string::String;
-    use std::option::Option;
+    use std::option::{Self, Option};
+    use std::signer;
     use std::error;
     use supra_framework::event;
     use dao_libs::math;
@@ -15,6 +16,8 @@ module dao_factory::charter {
     const E_INVALID_QUORUM: u64 = 3;
     const E_INVALID_THRESHOLD: u64 = 4;
     const E_UNAUTHORIZED_LAUNCHER: u64 = 5;
+    const E_ALREADY_BLESSED: u64 = 6;
+    const E_NOT_CURATOR: u64 = 7;
 
     const MAX_DELAY_SECONDS: u64 = 2592000; // 30 days
     const MIN_PERIOD_SECONDS: u64 = 86400;   // 1 day (Prevents flash-governance)
@@ -45,6 +48,7 @@ module dao_factory::charter {
         // (pure governance). Set once at creation by petra and immutable.
         // SINGLE SOURCE OF TRUTH for the DAO type across all modules.
         is_inflationary: bool,
+        is_blessed: bool,
     }
 
     #[event]
@@ -65,6 +69,12 @@ module dao_factory::charter {
     struct DaoActivated has drop, store {
         dao_address: address,
         launcher_address: address,
+    }
+
+    #[event]
+    struct StaticDaoBlessed has drop, store {
+        dao_address: address,
+        curator: address,
     }
 
     // Constructor function (only callable by our internal module)
@@ -113,7 +123,8 @@ module dao_factory::charter {
             // or inflationary DAOs start active immediately.
             is_active: (launcher_address == @0x0 || is_inflationary),
             launcher_address,
-            is_inflationary
+            is_inflationary,
+            is_blessed: is_inflationary
         });
     }
 
@@ -125,6 +136,33 @@ module dao_factory::charter {
     public fun is_inflationary(dao_address: address): bool acquires DaoConfig {
         if (!exists<DaoConfig>(dao_address)) return false;
         borrow_global<DaoConfig>(dao_address).is_inflationary
+    }
+
+    // Single source of truth for the blessed status of a DAO. Returns true
+    // for inflationary DAOs (born blessed) and blessed static DAOs.
+    // Returns false for static DAOs still under curatorship or non-existent DAOs.
+    #[view]
+    public fun is_blessed(dao_address: address): bool acquires DaoConfig {
+        if (!exists<DaoConfig>(dao_address)) return false;
+        borrow_global<DaoConfig>(dao_address).is_blessed
+    }
+
+    // Curatorship Blessing: The curator validates the static DAO and grants permanent emancipation.
+    // 100% IRREVOCABLE: Once blessed, is_blessed cannot be reversed to false.
+    public entry fun bless_dao(curator: &signer, dao_address: address) acquires DaoConfig {
+        let curator_addr = signer::address_of(curator);
+        let config = borrow_global_mut<DaoConfig>(dao_address);
+        assert!(!config.is_blessed, error::invalid_state(E_ALREADY_BLESSED));
+        assert!(
+            option::is_some(&config.guardian) && *option::borrow(&config.guardian) == curator_addr,
+            error::permission_denied(E_NOT_CURATOR)
+        );
+        config.is_blessed = true;
+
+        event::emit(StaticDaoBlessed {
+            dao_address,
+            curator: curator_addr,
+        });
     }
 
     // Function to activate the DAO (Called by petra)
@@ -139,16 +177,6 @@ module dao_factory::charter {
         });
     }
 
-    // Function to activate a static DAO via Factory Sentinel / Admin (Called by petra)
-    public(friend) fun set_active_by_factory(dao_address: address) acquires DaoConfig {
-        let config = borrow_global_mut<DaoConfig>(dao_address);
-        config.is_active = true;
-
-        event::emit(DaoActivated {
-            dao_address,
-            launcher_address: config.launcher_address,
-        });
-    }
 
     // The launcher that created this DAO (@0x0 for DAOs created directly,
     // without a launcher). Used by petra to validate launcher-scoped actions.
@@ -222,6 +250,19 @@ module dao_factory::charter {
 
     public(friend) fun update_guardian(dao_signer: &signer, new_guardian: Option<address>) acquires DaoConfig {
         let dao_address = std::signer::address_of(dao_signer);
+        let config = borrow_global_mut<DaoConfig>(dao_address);
+        let old_guardian = config.guardian;
+        config.guardian = new_guardian;
+
+        event::emit(GuardianUpdated {
+            dao_address,
+            old_guardian,
+            new_guardian,
+        });
+    }
+
+    // Factory: Allows the Factory Admin to reassign the curator if compromised BEFORE blessing
+    public(friend) fun update_guardian_by_factory(dao_address: address, new_guardian: Option<address>) acquires DaoConfig {
         let config = borrow_global_mut<DaoConfig>(dao_address);
         let old_guardian = config.guardian;
         config.guardian = new_guardian;

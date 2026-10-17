@@ -90,10 +90,10 @@ module dao_scripts::library {
     // Runs once at publish; `deployer` is the dao_scripts package account.
     fun init_module(deployer: &signer) {
         move_to(deployer, LibraryConfig {
-            admin: @FACTORY,
+            admin: @HOGL,
             pending_admin: @0x0,
             fee: 0,
-            fee_receiver: @FACTORY,
+            fee_receiver: @HOGL,
             next_id: 1,
             entries: smart_table::new(),
             hash_index: smart_table::new(),

@@ -20,6 +20,7 @@ module dao_tokens::smart_token {
     const E_INVALID_FEE: u64 = 5;
     const E_INVALID_ADDRESS: u64 = 6;
     const E_MAX_LIST_SIZE_EXCEEDED: u64 = 7;
+    const E_NESTING_TOO_DEEP: u64 = 8;
 
     const DEAD_ADDRESS: address = @0x000000000000000000000000000000000000000000000000000000000000dead;
 
@@ -161,6 +162,9 @@ module dao_tokens::smart_token {
             current = object::owner(object::address_to_object<ObjectCore>(current));
             depth = depth + 1;
         };
+        // H-04: Fail-closed. If after 8 levels it is still an object, reject transaction
+        // to prevent blacklist and max_wallet bypass via deep object chains.
+        assert!(!object::is_object(current), error::invalid_state(E_NESTING_TOO_DEEP));
         current
     }
 

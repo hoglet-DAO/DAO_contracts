@@ -40,6 +40,7 @@ module dao_factory::anchor {
     const E_PROPOSAL_NOT_EXPIRED: u64 = 16;
     const E_SCRIPT_HASH_MISMATCH: u64 = 17;
     const E_CANNOT_CANCEL_GUARDIAN_PROPOSAL: u64 = 18;
+    const E_NOT_BLESSED: u64 = 19;
 
     #[event]
     struct ProposalExecuted has drop, store {
@@ -145,10 +146,7 @@ module dao_factory::anchor {
                 dispatchable_fungible_asset::deposit(to_store, fa);
             };
         } else if (proposal_type == 2) { // Config Change
-            if (!charter::is_inflationary(dao_address)) {
-                let guardian_opt = charter::get_guardian(dao_address);
-                assert!(std::option::is_some(&guardian_opt) && signer::address_of(caller) == *std::option::borrow(&guardian_opt), error::permission_denied(E_NOT_GUARDIAN));
-            };
+            assert!(charter::is_blessed(dao_address), error::invalid_state(E_NOT_BLESSED));
             let (config_key, config_value) = ledger::get_proposal_action_config(dao_address, proposal_id);
             // Defense in depth: keys 9-11 are jubilee emission parameters and
             // only exist on inflationary DAOs (herald already gates this at
@@ -184,10 +182,7 @@ module dao_factory::anchor {
                 abort error::invalid_argument(E_INVALID_ACTION)
             };
         } else if (proposal_type == 4) { // Guardian Update
-            if (!charter::is_inflationary(dao_address)) {
-                let guardian_opt = charter::get_guardian(dao_address);
-                assert!(std::option::is_some(&guardian_opt) && signer::address_of(caller) == *std::option::borrow(&guardian_opt), error::permission_denied(E_NOT_GUARDIAN));
-            };
+            assert!(charter::is_blessed(dao_address), error::invalid_state(E_NOT_BLESSED));
             let new_guardian = ledger::extract_proposal_action_guardian(dao_address, proposal_id);
             if (new_guardian == @0x0) {
                 charter::update_guardian(&dao_signer, std::option::none());

@@ -8,6 +8,9 @@
 // registry (`petra::get_dao_for_token`) is the single source of truth for
 // which DAO a token belongs to, so a caller can never lock against the wrong
 // DAO. This mirrors `dao_setup` and `dao_zap`.
+//
+// Includes seamless auto-wrapping for tokens with transfer fees/hooks (third-party meme tokens)
+// and 1-click withdraw-and-unwrap support.
 module dao_router::dao_staking {
     use std::error;
     use std::option;
@@ -19,36 +22,144 @@ module dao_router::dao_staking {
     use supra_framework::object::{Self, Object};
     use dao_factory::petra;
     use dao_factory::legacy;
+    use dao_router::dao_wrapper;
 
     const E_DAO_NOT_FOUND: u64 = 1;
 
-    // Resolves the DAO that owns `gov_token`, aborting when the token has no
-    // DAO yet (it must be activated before it can be locked).
-    fun resolve_dao(gov_token: Object<Metadata>): address {
+    // Resolves the DAO that owns `gov_token`.
+    // If `gov_token` is already the DAO token (direct static or wrapped), returns that DAO.
+    // If `gov_token` has no direct DAO, but is registered in `dao_wrapper` and its wrapped FA owns a DAO,
+    // returns (dao_address, wrapped_metadata, true).
+    fun resolve_dao_and_token(gov_token: Object<Metadata>): (address, Object<Metadata>, bool) {
         let dao_opt = petra::get_dao_for_token(gov_token);
         if (option::is_some(&dao_opt)) {
-            option::extract(&mut dao_opt)
+            (option::extract(&mut dao_opt), gov_token, false)
+        } else if (dao_wrapper::is_wrapper_registered_for_native(gov_token)) {
+            let wrapped_meta = dao_wrapper::get_wrapper_for_fa(gov_token);
+            let wrapped_dao_opt = petra::get_dao_for_token(wrapped_meta);
+            if (option::is_some(&wrapped_dao_opt)) {
+                (option::extract(&mut wrapped_dao_opt), wrapped_meta, true)
+            } else {
+                abort error::not_found(E_DAO_NOT_FOUND)
+            }
         } else {
             abort error::not_found(E_DAO_NOT_FOUND)
         }
     }
 
+    // Resolves the DAO that owns `gov_token`, aborting when the token has no
+    // DAO yet (it must be activated before it can be locked).
+    fun resolve_dao(gov_token: Object<Metadata>): address {
+        let (dao_addr, _, _) = resolve_dao_and_token(gov_token);
+        dao_addr
+    }
+
+    // Universal view function for frontend: resolves the DAO address from either the
+    // native token address OR the wrapped governance token address seamlessly.
+    #[view]
+    public fun get_dao_for_token(gov_token: Object<Metadata>): option::Option<address> {
+        let dao_opt = petra::get_dao_for_token(gov_token);
+        if (option::is_some(&dao_opt)) {
+            dao_opt
+        } else if (dao_wrapper::is_wrapper_registered_for_native(gov_token)) {
+            let wrapped_meta = dao_wrapper::get_wrapper_for_fa(gov_token);
+            petra::get_dao_for_token(wrapped_meta)
+        } else {
+            option::none()
+        }
+    }
+
     // Creates a veNFT lock from the caller's FA (or already-wrapped) balance.
-    //
-    // Entry point for frontends/wallets. The returned `Object<VeToken>` is
-    // discarded because entry functions cannot return values.
-    // (Lives here rather than in `legacy` to keep the core package lean.)
-    //
-    // Every `legacy::create_lock` guard still applies: zero amount, MIN/MAX
-    // epochs, sentinel pause and blacklist.
+    // If `gov_token` is a native third-party token wrapped for governance,
+    // auto-wraps into `gwTOKEN` by delta and locks into legacy.
     public entry fun create_lock(
         user: &signer,
         gov_token: Object<Metadata>,
         amount: u64,
         lock_epochs: u64,
     ) {
-        let dao_address = resolve_dao(gov_token);
-        let _nft_object = legacy::create_lock(user, dao_address, amount, lock_epochs);
+        let (dao_address, target_token, needs_wrap) = resolve_dao_and_token(gov_token);
+        let user_addr = signer::address_of(user);
+
+        let lock_amount = if (needs_wrap) {
+            let from_store = primary_fungible_store::ensure_primary_store_exists(user_addr, gov_token);
+            let native_fa = dispatchable_fungible_asset::withdraw(user, from_store, amount);
+            let wrapped_fa = dao_wrapper::wrap_fa(native_fa);
+            let actual_minted = fungible_asset::amount(&wrapped_fa);
+            let to_store = primary_fungible_store::ensure_primary_store_exists(user_addr, target_token);
+            dispatchable_fungible_asset::deposit(to_store, wrapped_fa);
+            actual_minted
+        } else {
+            amount
+        };
+
+        let _nft_object = legacy::create_lock(user, dao_address, lock_amount, lock_epochs);
+    }
+
+    // Unified increase lock amount: if the DAO uses wrapped FA, auto-wraps native tokens.
+    // If it's a standard token, directly deposits into the lock. Works for all DAOs.
+    public entry fun increase_lock_amount(
+        user: &signer,
+        legacy_addr: address,
+        amount: u64,
+    ) {
+        let user_addr = signer::address_of(user);
+        let dao_address = legacy::get_dao_address(object::address_to_object(legacy_addr));
+        let token_metadata_addr = legacy::get_token_metadata_address(dao_address);
+        let token_metadata = object::address_to_object<Metadata>(token_metadata_addr);
+
+        if (dao_wrapper::is_wrapper_fa(token_metadata)) {
+            let native_metadata = dao_wrapper::get_original_fa(token_metadata);
+            let from_store = primary_fungible_store::ensure_primary_store_exists(user_addr, native_metadata);
+            let native_fa = dispatchable_fungible_asset::withdraw(user, from_store, amount);
+            let wrapped_fa = dao_wrapper::wrap_fa(native_fa);
+            let actual_minted = fungible_asset::amount(&wrapped_fa);
+            let to_store = primary_fungible_store::ensure_primary_store_exists(user_addr, token_metadata);
+            dispatchable_fungible_asset::deposit(to_store, wrapped_fa);
+
+            legacy::increase_amount(user, legacy_addr, actual_minted);
+        } else {
+            legacy::increase_amount(user, legacy_addr, amount);
+        };
+    }
+
+    public entry fun increase_lock_amount_from_native(
+        user: &signer,
+        legacy_addr: address,
+        native_amount: u64,
+    ) {
+        increase_lock_amount(user, legacy_addr, native_amount);
+    }
+
+    // Withdraws from expired veNFT and unwraps the tokens to native in 1 atomic transaction.
+    // If the DAO token is wrapped, returns the underlying native token to the user.
+    // Works for all DAOs (leaves standard tokens in user wallet).
+    public entry fun withdraw_and_unwrap(
+        user: &signer,
+        legacy_addr: address,
+    ) {
+        let user_addr = signer::address_of(user);
+        let dao_address = legacy::get_dao_address(object::address_to_object(legacy_addr));
+        let token_metadata_addr = legacy::get_token_metadata_address(dao_address);
+        let token_metadata = object::address_to_object<Metadata>(token_metadata_addr);
+
+        let bal_before = if (primary_fungible_store::primary_store_exists(user_addr, token_metadata)) {
+            primary_fungible_store::balance(user_addr, token_metadata)
+        } else {
+            0
+        };
+        legacy::withdraw(user, legacy_addr);
+        let bal_after = primary_fungible_store::balance(user_addr, token_metadata);
+        let withdrawn_amount = bal_after - bal_before;
+
+        if (dao_wrapper::is_wrapper_fa(token_metadata) && withdrawn_amount > 0) {
+            let user_wrapped_store = primary_fungible_store::ensure_primary_store_exists(user_addr, token_metadata);
+            let wrapped_fa = dispatchable_fungible_asset::withdraw(user, user_wrapped_store, withdrawn_amount);
+            let native_fa = dao_wrapper::unwrap_fa(wrapped_fa);
+            let native_metadata = fungible_asset::asset_metadata(&native_fa);
+            let native_store = primary_fungible_store::ensure_primary_store_exists(user_addr, native_metadata);
+            dispatchable_fungible_asset::deposit(native_store, native_fa);
+        };
     }
 
     // Coin-native counterpart of `create_lock`: holders of the legacy Coin
@@ -91,14 +202,14 @@ module dao_router::dao_staking {
     }
 
     // Resolves a CoinType to its paired FA Metadata object.
-    // Falls back to @0x1 (native SupraCoin) when no paired metadata exists.
+    // Falls back to @0xa (native SupraCoin FA metadata) when no paired metadata exists (FIX L-04).
     fun resolve_metadata<CoinType>(): Object<Metadata> {
         let metadata_opt = coin::paired_metadata<CoinType>();
         if (option::is_some(&metadata_opt)) {
             option::extract(&mut metadata_opt)
         } else {
-            // SupraCoin has no paired metadata object; use @0x1 as fallback.
-            object::address_to_object<Metadata>(@0x1)
+            // SupraCoin native FA metadata object resides at @0xa (FIX L-04)
+            object::address_to_object<Metadata>(@0xa)
         }
     }
 }

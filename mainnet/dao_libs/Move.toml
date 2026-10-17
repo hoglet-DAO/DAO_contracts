@@ -4,8 +4,8 @@ version = "1.0.0"
 
 [addresses]
 
-FACTORY = "0x6e3e09ab7fd0145d7befc0c68d6944ddc1a90fd45b8a6d28c76d8c48bed676b0"
-dao_libs = "0x47426f5685d3283b72cfa6762a298a45fc0e31edff3d3bae9f966e7c68686409"
+HOGL = "0x2ff2ca7683cde2e2d4acb53c3e1c52114b4f8a80a86bac2a065a6d487436ac1d"
+dao_libs = "0xc91177c0c283292d8de2a1be69926d904d055bc8ae758a2a2958e7508121a30e"
 
 [dependencies.SupraFramework]
 git = "https://github.com/Entropy-Foundation/aptos-core.git"

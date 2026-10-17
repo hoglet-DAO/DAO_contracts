@@ -104,8 +104,12 @@ module dao_factory::witness {
         assert!(object::is_object(legacy_addr), error::invalid_argument(E_NOT_OBJECT));
         let ve_token_obj = object::address_to_object<legacy::VeToken>(legacy_addr);
 
-        // Sentinel: cast_vote is pausable
-        sentinel::assert_not_paused(dao_address);
+        // Sentinel: cast_vote is pausable except for Type 4 (Guardian replacement)
+        // so a rogue guardian cannot pause voting to defeat their own dismissal.
+        let proposal_type = ledger::get_proposal_type(dao_address, proposal_id);
+        if (proposal_type != 4) {
+            sentinel::assert_not_paused(dao_address);
+        };
 
         // DAO Activation Lock: Only active DAOs allow votes
         assert!(charter::is_active(dao_address), error::permission_denied(E_DAO_NOT_ACTIVE));

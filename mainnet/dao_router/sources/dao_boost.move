@@ -87,17 +87,20 @@ module dao_router::dao_boost {
         foundry::unboost(user, gauge_addr);
 
         // 3. Unwrap each returned 0x4 Object back into its V1 token.
+        // Skips any NFT that no longer exists (e.g. burned by its creator while escrowed).
         let i = 0;
         let len = vector::length(&v2_addrs);
         while (i < len) {
             let v2_addr = *vector::borrow(&v2_addrs, i);
-            let v2_token = object::address_to_object<TokenV2>(v2_addr);
+            if (object::object_exists<TokenV2>(v2_addr)) {
+                let v2_token = object::address_to_object<TokenV2>(v2_addr);
 
-            // Burn 0x4, get V1 back.
-            let v1_token = nft_wrapper::unwrap_da_to_v1(user, v2_token);
+                // Burn 0x4, get V1 back.
+                let v1_token = nft_wrapper::unwrap_da_to_v1(user, v2_token);
 
-            // Deposit V1 into the user's account.
-            tokenv1::deposit_token(user, v1_token);
+                // Deposit V1 into the user's account.
+                tokenv1::deposit_token(user, v1_token);
+            };
 
             i = i + 1;
         };

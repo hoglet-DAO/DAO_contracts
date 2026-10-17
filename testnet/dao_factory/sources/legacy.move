@@ -360,9 +360,10 @@ module dao_factory::legacy {
             let orphaned_u128 = if (earned_u128 > ve_data.rebase_debt) { earned_u128 - ve_data.rebase_debt } else { 0 };
             let orphaned = (orphaned_u128 as u64);
 
-            // FIX (audit M-05): Expired locks cannot compound rebase. Instead of permanently trapping
+            // FIX (audit M-05 + M-08): Expired locks cannot compound rebase. Instead of permanently trapping
             // their allocated rebase in rebase_store, sweep the orphaned tokens to the DAO treasury.
-            if (orphaned > 0 && tax_router::has_tax_free_router(ve_data.dao_address)) {
+            // transfer_tax_free handles the fallback for DAOs without a tax-free router.
+            if (orphaned > 0) {
                 let rebase_signer = object::generate_signer_for_extending(&registry.rebase_extend_ref);
                 let treasury_store = primary_fungible_store::ensure_primary_store_exists(ve_data.dao_address, registry.token_metadata);
                 transfer_tax_free(ve_data.dao_address, &rebase_signer, registry.rebase_store, treasury_store, orphaned);
