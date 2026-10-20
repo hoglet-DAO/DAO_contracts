@@ -84,7 +84,10 @@ module dao_factory::sentinel {
     //
     // The pause auto-expires after PAUSE_DURATION_EPOCHS.
     fun assert_guardian(guardian: &signer, dao_address: address): address {
-        let guardian_addr = assert_guardian(guardian, dao_address);
+        let guardian_opt = charter::get_guardian(dao_address);
+        assert!(option::is_some(&guardian_opt), error::invalid_state(E_NO_GUARDIAN));
+        let guardian_addr = *option::borrow(&guardian_opt);
+        assert!(signer::address_of(guardian) == guardian_addr, error::permission_denied(E_NOT_GUARDIAN));
         guardian_addr
     }
 
@@ -131,10 +134,7 @@ module dao_factory::sentinel {
         guardian: &signer, 
         dao_address: address
     ) acquires PauseState {
-        let guardian_opt = charter::get_guardian(dao_address);
-        assert!(option::is_some(&guardian_opt), error::invalid_state(E_NO_GUARDIAN));
-        let guardian_addr = *option::borrow(&guardian_opt);
-        assert!(signer::address_of(guardian) == guardian_addr, error::permission_denied(E_NOT_GUARDIAN));
+        let guardian_addr = assert_guardian(guardian, dao_address);
 
         let state = borrow_global_mut<PauseState>(dao_address);
         assert!(state.is_paused, error::invalid_state(E_NOT_PAUSED));

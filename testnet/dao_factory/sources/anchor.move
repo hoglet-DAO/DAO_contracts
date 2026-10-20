@@ -218,10 +218,10 @@ module dao_factory::anchor {
             let new_guardian = ledger::extract_proposal_action_guardian(dao_address, proposal_id);
             if (new_guardian == @0x0) {
                 charter::update_guardian(&dao_signer, std::option::none());
-                sentinel::force_unpause_by_governance(dao_address);
             } else {
                 charter::update_guardian(&dao_signer, std::option::some(new_guardian));
             };
+            sentinel::force_unpause_by_governance(dao_address);
         } else if (proposal_type == 5) { // NFT Transfer
             let (nft_address, recipient) = ledger::extract_proposal_action_nft(dao_address, proposal_id);
             // H-02 Defense: Ensure object is a valid NFT and not an internal protocol object or the DAO

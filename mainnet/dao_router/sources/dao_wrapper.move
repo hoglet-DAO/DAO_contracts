@@ -141,6 +141,19 @@ module dao_router::dao_wrapper {
     // Wrapper creation restricted to friends (dao_setup)
     // Produces a clean 1:1 governance wrapper with AMM-style short prefix (gw + Wrapped )
     // Clones decimals, icon, and project URI, with strict framework character-overflow truncation.
+    fun safe_truncate_string(s: &string::String, max_len: u64): string::String {
+        let len = string::length(s);
+        if (len <= max_len) {
+            return *s
+        };
+        let bytes = string::bytes(s);
+        let end_idx = max_len;
+        while (end_idx > 0 && (*std::vector::borrow(bytes, end_idx) & 0xC0u8) == 0x80u8) {
+            end_idx = end_idx - 1;
+        };
+        string::sub_string(s, 0, end_idx)
+    }
+
     public(friend) fun create_fungible_asset_for_fa(native_metadata: Object<Metadata>): Object<Metadata> acquires WrapperRegistry {
         assert!(!is_wrapper_fa(native_metadata), error::invalid_argument(ERROR_ALREADY_WRAPPED));
         let registry = borrow_global_mut<WrapperRegistry>(@dao_router);

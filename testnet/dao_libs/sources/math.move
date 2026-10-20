@@ -343,9 +343,10 @@ module dao_libs::math {
         if (proposal_type == 1) {
             assert!(action_recipient != @0x0 && action_amount > 0, error::invalid_argument(err_invalid));
         } else if (proposal_type == 2) {
-            assert!(action_config_key >= 1 && action_config_key <= 11, error::invalid_argument(err_invalid));
-        } else if (proposal_type == 4) {
-            assert!(action_target_address != @0x0, error::invalid_argument(err_invalid));
+            assert!(
+                action_config_key <= 11 || (action_config_key >= 20 && action_config_key <= 27),
+                error::invalid_argument(err_invalid)
+            );
         };
         (derived_target, derived_asset, is_super_quorum)
     }
