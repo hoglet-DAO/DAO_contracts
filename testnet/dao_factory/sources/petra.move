@@ -391,12 +391,12 @@ module dao_factory::petra {
         smart_table::add(&mut registry.registered_tokens, native_token, dao_address);
     }
 
-    fun verify_launcher_and_charge_fee(creator: &signer, launcher_signer: &signer, governance_token: Object<Metadata>): address acquires FactoryConfig, LauncherRegistry {
+    fun verify_launcher_and_charge_fee(_creator: &signer, launcher_signer: &signer, governance_token: Object<Metadata>): address acquires LauncherRegistry {
         let launcher_address = signer::address_of(launcher_signer);
         assert_launcher(launcher_address);
         let launcher_registry = borrow_global<LauncherRegistry>(@dao_factory);
         assert_claimed_by_launcher(launcher_registry, launcher_address, governance_token);
-        charge_creation_fee(creator);
+        // Exonerated: Whitelisted launchers do not pay creation fee
         launcher_address
     }
 
