@@ -117,6 +117,16 @@ module dao_scripts::library {
         has_args: bool,
     ) acquires LibraryConfig {
         assert!(vector::length(&execution_hash) == 32, error::invalid_argument(E_INVALID_HASH_LENGTH));
+        let is_non_zero = false;
+        let k = 0;
+        while (k < 32) {
+            if (*vector::borrow(&execution_hash, k) != 0) {
+                is_non_zero = true;
+                break;
+            };
+            k = k + 1;
+        };
+        assert!(is_non_zero, error::invalid_argument(E_INVALID_HASH_LENGTH));
 
         // Bound the CID length (IPFS CIDv0 ~ 46, CIDv1 ~ 59): rejects storage spam.
         let cid_len = string::length(&source_cid);

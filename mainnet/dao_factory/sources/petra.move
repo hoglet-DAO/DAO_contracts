@@ -48,6 +48,7 @@ module dao_factory::petra {
     const E_NAME_TOO_LONG: u64 = 12;
     const E_SYMBOL_TOO_LONG: u64 = 13;
     const E_UNAUTHORIZED_LAUNCHER: u64 = 14;
+    const E_INVALID_RATIO: u64 = 15;
     const E_TOKEN_CLAIMED_BY_LAUNCHER: u64 = 15;
     const E_INVALID_ADDRESS: u64 = 16;
     const E_FEE_TOO_HIGH: u64 = 17;
@@ -323,9 +324,15 @@ module dao_factory::petra {
         else if (config_key == 7) config.default_timelock_delay = value
         else if (config_key == 8) config.default_grace_period = value
         else if (config_key == 9) config.default_decay_bps = value
-        else if (config_key == 10) config.default_tail_emission_ppm = value
+        else if (config_key == 10) {
+            assert!(value <= config.default_initial_emission_ppm, error::invalid_argument(E_INVALID_RATIO));
+            config.default_tail_emission_ppm = value;
+        }
         else if (config_key == 11) config.default_gauge_split_bps = value
-        else if (config_key == 12) config.default_initial_emission_ppm = value;
+        else if (config_key == 12) {
+            assert!(value >= config.default_tail_emission_ppm, error::invalid_argument(E_INVALID_RATIO));
+            config.default_initial_emission_ppm = value;
+        };
     }
 
     // The admin can renounce, burning the admin key.
@@ -374,26 +381,7 @@ module dao_factory::petra {
         wrapped_token: Object<Metadata>,
         native_token: Object<Metadata>,
     ) acquires FactoryConfig, DaoRegistry, LauncherRegistry {
-        charge_creation_fee(creator);
-        assert_token_not_claimed(wrapped_token);
-        assert_token_not_claimed(native_token);
-        assert_token_not_registered(native_token);
-
-        // Cryptographic verification: ensure wrapped_token is genuinely created by official dao_wrapper
-        let wrapper_address = account::create_resource_address(&DAO_ROUTER, WRAPPER_SEED);
-        let native_addr = object::object_address(&native_token);
-        let expected_wrapper_address = object::create_object_address(&wrapper_address, bcs::to_bytes(&native_addr));
-        assert!(object::object_address(&wrapped_token) == expected_wrapper_address, error::invalid_argument(E_INVALID_WRAPPER));
-
-        let native_supply_opt = fungible_asset::supply(native_token);
-        assert!(option::is_some(&native_supply_opt), error::invalid_argument(E_SUPPLY_ZERO));
-        let native_supply = *option::borrow(&native_supply_opt);
-        assert!(native_supply > 0, error::invalid_argument(E_SUPPLY_ZERO));
-
-        // Verification: ensure wrapped_token is an uncirculated wrapper and matches native decimals
-        let wrapped_supply_opt = fungible_asset::supply(wrapped_token);
-        assert!(option::is_some(&wrapped_supply_opt) && *option::borrow(&wrapped_supply_opt) == 0, error::invalid_argument(E_SUPPLY_ZERO));
-        assert!(fungible_asset::decimals(wrapped_token) == fungible_asset::decimals(native_token), error::invalid_argument(E_DECIMALS_TOO_HIGH));
+        let native_supply = verify_and_get_wrapper_supply(creator, wrapped_token, native_token);
 
         let config = borrow_global<FactoryConfig>(@dao_factory);
         let dao_address = create_dao_static_internal(creator, wrapped_token, config, @0x0, option::some(native_supply));
@@ -401,6 +389,53 @@ module dao_factory::petra {
         // Register the native token as well so nobody can frontrun or duplicate this DAO
         let registry = borrow_global_mut<DaoRegistry>(@dao_factory);
         smart_table::add(&mut registry.registered_tokens, native_token, dao_address);
+    }
+
+    fun verify_launcher_and_charge_fee(creator: &signer, launcher_signer: &signer, governance_token: Object<Metadata>): address acquires FactoryConfig, LauncherRegistry {
+        let launcher_address = signer::address_of(launcher_signer);
+        assert_launcher(launcher_address);
+        let launcher_registry = borrow_global<LauncherRegistry>(@dao_factory);
+        assert_claimed_by_launcher(launcher_registry, launcher_address, governance_token);
+        charge_creation_fee(creator);
+        launcher_address
+    }
+
+    fun verify_and_get_wrapper_supply(creator: &signer, wrapped_token: Object<Metadata>, native_token: Object<Metadata>): u128 acquires FactoryConfig, DaoRegistry, LauncherRegistry {
+        charge_creation_fee(creator);
+        assert_token_not_claimed(wrapped_token);
+        assert_token_not_claimed(native_token);
+        assert_token_not_registered(native_token);
+
+        math::validate_wrapper_token(
+            DAO_ROUTER,
+            WRAPPER_SEED,
+            object::object_address(&wrapped_token),
+            object::object_address(&native_token),
+            fungible_asset::supply(native_token),
+            fungible_asset::supply(wrapped_token),
+            fungible_asset::decimals(wrapped_token),
+            fungible_asset::decimals(native_token),
+            E_INVALID_WRAPPER,
+            E_SUPPLY_ZERO,
+            E_DECIMALS_TOO_HIGH
+        )
+    }
+
+    fun assert_not_dispatchable(creator: &signer, governance_token: Object<Metadata>) {
+        assert!(
+            !smart_token::is_initialized(object::object_address(&governance_token)),
+            error::invalid_argument(E_SMART_TOKEN_NOT_SUPPORTED_FOR_STATIC_DAO)
+        );
+        let probe_constr = object::create_object_from_account(creator);
+        let probe_store = fungible_asset::create_store(&probe_constr, governance_token);
+        let is_dispatchable = fungible_asset::is_store_dispatchable(probe_store);
+        let delete_ref = object::generate_delete_ref(&probe_constr);
+        fungible_asset::remove_store(&delete_ref);
+        object::delete(delete_ref);
+        assert!(
+            !is_dispatchable,
+            error::invalid_argument(E_SMART_TOKEN_NOT_SUPPORTED_FOR_STATIC_DAO)
+        );
     }
 
     fun assert_launcher(launcher_address: address) acquires LauncherRegistry {
@@ -431,12 +466,7 @@ module dao_factory::petra {
         governance_token: Object<Metadata>,
         expected_supply: u128
     ): address acquires FactoryConfig, DaoRegistry, LauncherRegistry {
-        let launcher_address = signer::address_of(launcher_signer);
-        assert_launcher(launcher_address);
-        let launcher_registry = borrow_global<LauncherRegistry>(@dao_factory);
-        assert_claimed_by_launcher(launcher_registry, launcher_address, governance_token);
-
-        charge_creation_fee(creator);
+        let launcher_address = verify_launcher_and_charge_fee(creator, launcher_signer, governance_token);
 
         let config = borrow_global<FactoryConfig>(@dao_factory);
 
@@ -460,22 +490,27 @@ module dao_factory::petra {
         let governance_token_addr = object::object_address(&governance_token);
         let name = fungible_asset::name(governance_token);
         let symbol = fungible_asset::symbol(governance_token);
-        assert!(string::length(&name) <= 60, error::invalid_argument(E_NAME_TOO_LONG));
-        assert!(string::length(&symbol) <= 20, error::invalid_argument(E_SYMBOL_TOO_LONG));
-        
+        let decimals = fungible_asset::decimals(governance_token);
+        let supply_opt = fungible_asset::supply(governance_token);
+
+        let current_supply = math::validate_token_metadata_and_supply(
+            string::length(&name),
+            string::length(&symbol),
+            decimals,
+            &supply_opt,
+            &expected_supply_opt,
+            E_NAME_TOO_LONG,
+            E_SYMBOL_TOO_LONG,
+            E_DECIMALS_TOO_HIGH,
+            E_NO_SUPPLY_TRACKING,
+            E_SUPPLY_ZERO
+        );
+
         let seed = bcs::to_bytes(&governance_token_addr);
         let time_micros = timestamp::now_microseconds();
         vector::append(&mut seed, bcs::to_bytes(&time_micros));
         let (dao_signer, signer_cap) = account::create_resource_account(creator, seed);
         let dao_address = signer::address_of(&dao_signer);
-
-        let decimals = fungible_asset::decimals(governance_token);
-        assert!(decimals <= 8, error::invalid_argument(E_DECIMALS_TOO_HIGH));
-
-        let supply_opt = fungible_asset::supply(governance_token);
-        assert!(option::is_some(&supply_opt), error::invalid_argument(E_NO_SUPPLY_TRACKING));
-        let current_supply = if (option::is_some(&expected_supply_opt)) { *option::borrow(&expected_supply_opt) } else { *option::borrow(&supply_opt) };
-        assert!(current_supply > 0 && current_supply <= 18446744073709551615, error::invalid_argument(E_SUPPLY_ZERO));
 
         (dao_signer, signer_cap, dao_address, name, current_supply) // keep u128 to prevent truncation
     }
@@ -492,29 +527,7 @@ module dao_factory::petra {
         launcher_address: address,
         expected_supply_opt: option::Option<u128>,
     ): address acquires DaoRegistry {
-        assert_token_not_registered(governance_token);
-        assert!(
-            !smart_token::is_initialized(object::object_address(&governance_token)),
-            error::invalid_argument(E_SMART_TOKEN_NOT_SUPPORTED_FOR_STATIC_DAO)
-        );
-        // Universal dispatch probe: ensures third-party tokens have NO custom hooks whatsoever
-        let probe_constr = object::create_object_from_account(creator);
-        let probe_store = fungible_asset::create_store(&probe_constr, governance_token);
-        assert!(
-            !fungible_asset::is_store_dispatchable(probe_store),
-            error::invalid_argument(E_SMART_TOKEN_NOT_SUPPORTED_FOR_STATIC_DAO)
-        );
-        let (dao_signer, signer_cap, dao_address, name, current_supply) = prepare_dao_creation(creator, governance_token, expected_supply_opt);
-
-        initialize_core_modules(&dao_signer, signer_cap, name, config, current_supply, launcher_address, false, governance_token);
-        sentinel::initialize(&dao_signer);
-
-        let registry = borrow_global_mut<DaoRegistry>(@dao_factory);
-        smart_table::add(&mut registry.registered_tokens, governance_token, dao_address);
-
-        emit_dao_created(signer::address_of(creator), dao_address, object::object_address(&governance_token), name, false);
-
-        dao_address
+        create_dao_internal(creator, governance_token, option::none(), config, launcher_address, expected_supply_opt, vector::empty<address>(), false)
     }
 
     // Inflationary DAO ve(3,3) (For Launcher tokens) 
@@ -574,12 +587,7 @@ module dao_factory::petra {
         expected_supply: u128,
         amm_pool_addresses: vector<address>
     ): address acquires FactoryConfig, DaoRegistry, LauncherRegistry {
-        let launcher_address = signer::address_of(launcher_signer);
-        assert_launcher(launcher_address);
-        let launcher_registry = borrow_global<LauncherRegistry>(@dao_factory);
-        assert_claimed_by_launcher(launcher_registry, launcher_address, governance_token);
-
-        charge_creation_fee(creator);
+        let launcher_address = verify_launcher_and_charge_fee(creator, launcher_signer, governance_token);
         let config = borrow_global<FactoryConfig>(@dao_factory);
         create_dao_inflationary_internal(creator, governance_token, option::none(), config, launcher_address, option::some(expected_supply), amm_pool_addresses)
     }
@@ -593,39 +601,51 @@ module dao_factory::petra {
         expected_supply_opt: option::Option<u128>,
         amm_pool_addresses: vector<address>
     ): address acquires DaoRegistry {
+        create_dao_internal(creator, governance_token, mint_ref_opt, config, launcher_address, expected_supply_opt, amm_pool_addresses, true)
+    }
+
+    fun create_dao_internal(
+        creator: &signer,
+        governance_token: Object<Metadata>,
+        mint_ref_opt: option::Option<MintRef>,
+        config: &FactoryConfig,
+        launcher_address: address,
+        expected_supply_opt: option::Option<u128>,
+        amm_pool_addresses: vector<address>,
+        is_inflationary: bool,
+    ): address acquires DaoRegistry {
         assert_token_not_registered(governance_token);
 
-        // SECURITY: a partner launcher MUST use a dao_tokens::smart_token for an
-        // inflationary DAO. Its internal flows (rebase, gauge rewards, bribes,
-        // emissions) assume a smart_token TaxFreeCap to move the token tax-free;
-        // an arbitrary hook token would charge/reject and desync the DAO. The
-        // in-house path (launcher_address == @0x0: the Hoglet genesis token,
-        // which has no hooks) is exempt.
-        if (launcher_address != @0x0) {
-            assert!(
-                smart_token::is_initialized(object::object_address(&governance_token)),
-                error::invalid_argument(E_INFLATIONARY_REQUIRES_SMART_TOKEN)
-            );
+        if (is_inflationary) {
+            if (launcher_address != @0x0) {
+                assert!(
+                    smart_token::is_initialized(object::object_address(&governance_token)),
+                    error::invalid_argument(E_INFLATIONARY_REQUIRES_SMART_TOKEN)
+                );
+            };
+        } else {
+            assert_not_dispatchable(creator, governance_token);
         };
-
-        let registry = borrow_global_mut<DaoRegistry>(@dao_factory);
 
         let (dao_signer, signer_cap, dao_address, name, current_supply) = prepare_dao_creation(creator, governance_token, expected_supply_opt);
 
-        initialize_core_modules(&dao_signer, signer_cap, name, config, current_supply, launcher_address, true, governance_token);
-
-        zeal::initialize(&dao_signer, dao_address, amm_pool_addresses);
-        restore::initialize(&dao_signer, object::object_address(&governance_token), config.default_bribe_tokens);
-        boost_registry::initialize(&dao_signer);
+        initialize_core_modules(&dao_signer, signer_cap, name, config, current_supply, launcher_address, is_inflationary, governance_token);
         sentinel::initialize(&dao_signer);
-        if (option::is_some(&mint_ref_opt)) {
-            let mint_ref = option::extract(&mut mint_ref_opt);
-            init_jubilee_internal(&dao_signer, mint_ref, config, current_supply);
+
+        if (is_inflationary) {
+            zeal::initialize(&dao_signer, dao_address, amm_pool_addresses);
+            restore::initialize(&dao_signer, object::object_address(&governance_token), config.default_bribe_tokens);
+            boost_registry::initialize(&dao_signer);
+            if (option::is_some(&mint_ref_opt)) {
+                let mint_ref = option::extract(&mut mint_ref_opt);
+                init_jubilee_internal(&dao_signer, mint_ref, config, current_supply);
+            };
         };
 
+        let registry = borrow_global_mut<DaoRegistry>(@dao_factory);
         smart_table::add(&mut registry.registered_tokens, governance_token, dao_address);
 
-        emit_dao_created(signer::address_of(creator), dao_address, object::object_address(&governance_token), name, true);
+        emit_dao_created(signer::address_of(creator), dao_address, object::object_address(&governance_token), name, is_inflationary);
 
         dao_address
     }

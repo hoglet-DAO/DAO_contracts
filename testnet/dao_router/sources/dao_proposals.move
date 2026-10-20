@@ -22,6 +22,7 @@ module dao_router::dao_proposals {
     const E_SCRIPT_NOT_FOUND: u64 = 14;
     const E_NOT_AN_NFT: u64 = 17;
     const E_INVALID_TARGET: u64 = 18;
+    const E_NOT_BLESSED: u64 = 19;
 
     public entry fun propose_treasury_transfer(
         proposer: &signer,
@@ -176,6 +177,7 @@ module dao_router::dao_proposals {
         script_id: u64,
         add: bool,
     ) {
+        assert!(charter::is_blessed(dao_address), error::invalid_state(E_NOT_BLESSED));
         assert!(library::script_exists(script_id), error::invalid_argument(E_SCRIPT_NOT_FOUND));
 
         herald::propose_standard(

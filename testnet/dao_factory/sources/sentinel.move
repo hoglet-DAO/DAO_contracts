@@ -10,6 +10,7 @@
 //
 module dao_factory::sentinel {
     friend dao_factory::petra;
+    friend dao_factory::anchor;
 
     use std::signer;
     use supra_framework::event;
@@ -82,15 +83,16 @@ module dao_factory::sentinel {
     // Pauses the protocol. Only the Guardian can call this.
     //
     // The pause auto-expires after PAUSE_DURATION_EPOCHS.
+    fun assert_guardian(guardian: &signer, dao_address: address): address {
+        let guardian_addr = assert_guardian(guardian, dao_address);
+        guardian_addr
+    }
+
     public entry fun pause(
         guardian: &signer, 
         dao_address: address
     ) acquires PauseState {
-        // Verify that it is the Guardian
-        let guardian_opt = charter::get_guardian(dao_address);
-        assert!(option::is_some(&guardian_opt), error::invalid_state(E_NO_GUARDIAN));
-        let guardian_addr = *option::borrow(&guardian_opt);
-        assert!(signer::address_of(guardian) == guardian_addr, error::permission_denied(E_NOT_GUARDIAN));
+        let guardian_addr = assert_guardian(guardian, dao_address);
 
         let state = borrow_global_mut<PauseState>(dao_address);
         let current_epoch = pilgrim::now();
@@ -138,6 +140,7 @@ module dao_factory::sentinel {
         assert!(state.is_paused, error::invalid_state(E_NOT_PAUSED));
 
         state.is_paused = false;
+        state.pause_expiry_epoch = pilgrim::now();
         state.last_unpause_epoch = pilgrim::now();
 
         event::emit(ProtocolUnpaused {
@@ -164,7 +167,7 @@ module dao_factory::sentinel {
             // Auto-expire: if the deadline has passed, unpause automatically
             if (current_epoch >= state.pause_expiry_epoch) {
                 state.is_paused = false;
-                state.last_unpause_epoch = current_epoch;
+                state.last_unpause_epoch = state.pause_expiry_epoch;
                 
                 event::emit(ProtocolUnpaused {
                     dao_address,
@@ -212,5 +215,13 @@ module dao_factory::sentinel {
                               current_epoch >= effective_unpause + PAUSE_COOLDOWN_EPOCHS;
         
         not_actively_paused && cooldown_passed
+    }
+
+    public(friend) fun force_unpause_by_governance(dao_address: address) acquires PauseState {
+        if (!exists<PauseState>(dao_address)) return;
+        let state = borrow_global_mut<PauseState>(dao_address);
+        state.is_paused = false;
+        state.pause_expiry_epoch = pilgrim::now();
+        state.last_unpause_epoch = pilgrim::now();
     }
 }

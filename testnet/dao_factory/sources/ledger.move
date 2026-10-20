@@ -7,6 +7,7 @@ module dao_factory::ledger {
     friend dao_factory::harvest;
     friend dao_factory::restore;
     friend dao_factory::foundry;
+    friend dao_factory::zeal;
     
     use std::string::String;
     use std::error;
@@ -178,23 +179,18 @@ module dao_factory::ledger {
     public fun get_proposal_state(dao_address: address, proposal_id: u64): u8 acquires DaoState {
         let state = borrow_global<DaoState>(dao_address);
         let proposal = get_proposal_safe(state, proposal_id);
-        let current_time = timestamp::now_seconds();
-        
-        if (proposal.canceled) { return 2u8 }; // Canceled
-        if (proposal.executed) { return 6u8 }; // Executed
-        if (proposal.eta != 0) { return 5u8 }; // Queued (Timelock)
-        
-        if (current_time < proposal.start_time) { return 0u8 }; // Pending
-        if (current_time <= proposal.end_time) { return 1u8 }; // Active
-        
-        let total_participation = proposal.for_votes + proposal.against_votes + proposal.abstain_votes;
-        let quorum_reached = total_participation >= proposal.quorum_required;
-
-        if (quorum_reached && proposal.for_votes > proposal.against_votes) {
-            4u8 // Succeeded
-        } else {
-            3u8 // Defeated
-        }
+        math::compute_proposal_state(
+            proposal.canceled,
+            proposal.executed,
+            proposal.eta,
+            timestamp::now_seconds(),
+            proposal.start_time,
+            proposal.end_time,
+            proposal.for_votes,
+            proposal.against_votes,
+            proposal.abstain_votes,
+            proposal.quorum_required
+        )
     }
 
     // Returns the public details of the proposal

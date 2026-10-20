@@ -16,7 +16,15 @@ module dao_libs::format {
         } else {
             base_uri
         };
-        string::append(&mut uri, string_utils::to_string(&obj_addr));
+        let addr_str = string_utils::to_string(&obj_addr);
+        let addr_bytes = string::bytes(&addr_str);
+        let len = std::vector::length(addr_bytes);
+        if (len > 0 && *std::vector::borrow(addr_bytes, 0) == 64u8) {
+            let stripped = string::sub_string(&addr_str, 1, len);
+            string::append(&mut uri, stripped);
+        } else {
+            string::append(&mut uri, addr_str);
+        };
         uri
     }
 }

@@ -51,6 +51,7 @@ module dao_factory::herald {
     const E_PARAMETERIZED_SCRIPT_EMPTY_ARGS: u64 = 16;
     const E_NOT_AN_NFT: u64 = 17;
     const E_INVALID_TARGET: u64 = 18;
+    const E_NOT_BLESSED: u64 = 19;
 
     // Structs 
     struct HeraldState has key {
@@ -112,15 +113,18 @@ module dao_factory::herald {
         proposer: &signer,
         legacy_addr: address,
         dao_address: address,
-        is_super_quorum: bool
+        is_super_quorum: bool,
+        proposal_type: u8
     ): (address, address, u64, u64, u64, u64, u64) acquires HeraldState {
         let proposer_addr = signer::address_of(proposer);
 
         assert!(object::is_object(legacy_addr), error::invalid_argument(E_NOT_OBJECT));
         let legacy = object::address_to_object<legacy::VeToken>(legacy_addr);
 
-        // Sentinel: propose is pausable
-        sentinel::assert_not_paused(dao_address);
+        // Sentinel: propose is pausable except for Type 4 (Guardian removal)
+        if (proposal_type != 4) {
+            sentinel::assert_not_paused(dao_address);
+        };
         
         // DAO Activation Lock: Only active DAOs can accept proposals
         assert!(charter::is_active(dao_address), error::permission_denied(E_DAO_NOT_ACTIVE));
@@ -164,9 +168,7 @@ module dao_factory::herald {
         assert!(!legacy::is_expired(legacy), error::invalid_state(E_LOCK_EXPIRED));
 
         // Calculate time windows.
-        let now = timestamp::now_seconds();
-        let start_time = now + voting_delay;
-        let end_time   = start_time + voting_period;
+        let (start_time, end_time) = math::compute_proposal_window(timestamp::now_seconds(), voting_delay, voting_period);
 
         // Sequential ID.
         let proposal_id = charter::increment_proposal_count(dao_address);
@@ -181,17 +183,9 @@ module dao_factory::herald {
         // so quorum required is evaluated in the exact same units as votes cast (veToken voting power)
         let total_power = legacy::get_total_voting_power_at(dao_address, check_epoch);
         
-        let quorum_required = if (quorum_den == 0) {
-            0
-        } else if (is_super_quorum) {
-            math::mul_div_u64(total_power, super_quorum_threshold, quorum_den)
-        } else {
-            let default_quorum = math::mul_div_u64(total_power, quorum_num, quorum_den);
-            ledger::get_dynamic_quorum(dao_address, default_quorum)
-        };
-        if (quorum_required == 0 && total_power > 0) {
-            quorum_required = 1;
-        };
+        let default_quorum = math::mul_div_u64(total_power, quorum_num, quorum_den);
+        let dynamic_quorum = ledger::get_dynamic_quorum(dao_address, default_quorum);
+        let quorum_required = math::compute_required_quorum(total_power, super_quorum_threshold, quorum_den, is_super_quorum, dynamic_quorum);
         
         (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required, check_epoch)
     }
@@ -211,23 +205,20 @@ module dao_factory::herald {
         action_config_key: u8,
         action_config_value: u64,
         action_target_address: address,
-        event_target: address,
-        event_asset: address,
+        _event_target: address,
+        _event_asset: address,
     ) acquires HeraldState {
-        assert!(
-            proposal_type == 1 || proposal_type == 2 || proposal_type == 3 ||
-            proposal_type == 4 || proposal_type == 5 || proposal_type == 6 ||
-            proposal_type == 7 || proposal_type == 9,
-            error::invalid_argument(E_INVALID_ACTION_TYPE)
+        let (derived_target, derived_asset, is_super_quorum) = math::validate_standard_proposal_params(
+            proposal_type, action_recipient, action_amount, action_config_key, action_target_address, E_INVALID_ACTION_TYPE
         );
-        let is_super_quorum = (
-            proposal_type == 2 || proposal_type == 4 || proposal_type == 5 ||
-            proposal_type == 6 || proposal_type == 9
-        );
+        if (proposal_type == 9) {
+            assert!(charter::is_blessed(dao_address), error::invalid_state(E_NOT_BLESSED));
+        };
+
         create_proposal_internal(
             proposer, legacy_addr, dao_address, title, description_hash, is_super_quorum, proposal_type,
             proposal_data, action_recipient, action_amount, action_config_key, action_config_value,
-            action_target_address, event_target, event_asset
+            action_target_address, derived_target, derived_asset
         );
     }
 
@@ -244,23 +235,25 @@ module dao_factory::herald {
             std::option::is_some(&charter::get_guardian(dao_address)),
             error::invalid_state(E_NO_GUARDIAN)
         );
+        assert!(charter::is_blessed(dao_address), error::invalid_state(E_NOT_BLESSED));
         assert!(
             vault::is_approved(dao_address, script_id),
             error::invalid_state(E_SCRIPT_NOT_ALLOWED)
         );
         let execution_hash = library::get_execution_hash(script_id);
-        assert!(vector::length(&execution_hash) == 32, error::invalid_argument(E_INVALID_HASH_LENGTH));
-        assert!(vector::length(&args_commitment) == 32, error::invalid_argument(E_INVALID_HASH_LENGTH));
-
         let empty_commitment = aptos_hash::keccak256(vector::empty<u8>());
-        if (library::has_args(script_id)) {
-            assert!(args_commitment != empty_commitment, error::invalid_argument(E_PARAMETERIZED_SCRIPT_EMPTY_ARGS));
-        } else {
-            assert!(args_commitment == empty_commitment, error::invalid_argument(E_STATIC_SCRIPT_HAS_ARGS));
-        };
+        math::validate_script_proposal_hashes(
+            &execution_hash,
+            &args_commitment,
+            library::has_args(script_id),
+            empty_commitment,
+            E_INVALID_HASH_LENGTH,
+            E_PARAMETERIZED_SCRIPT_EMPTY_ARGS,
+            E_STATIC_SCRIPT_HAS_ARGS
+        );
 
         let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required, snapshot_epoch) = 
-            validate_and_prepare_proposal(proposer, legacy_addr, dao_address, true);
+            validate_and_prepare_proposal(proposer, legacy_addr, dao_address, true, 8u8);
 
         let packed = execution_hash;
         vector::append(&mut packed, args_commitment);
@@ -297,7 +290,7 @@ module dao_factory::herald {
         event_asset: address,
     ) acquires HeraldState {
         let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required, snapshot_epoch) = 
-            validate_and_prepare_proposal(proposer, legacy_addr, dao_address, is_super_quorum);
+            validate_and_prepare_proposal(proposer, legacy_addr, dao_address, is_super_quorum, proposal_type);
 
         let proposal = ledger::new_proposal(
             proposal_id, proposer_addr, ve_token_addr, title, description_hash, start_time, end_time,

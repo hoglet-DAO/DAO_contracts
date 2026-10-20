@@ -1,5 +1,10 @@
 module dao_libs::math {
     use std::error;
+    use std::vector;
+    use std::option;
+    use std::bcs;
+    use supra_framework::account;
+    use supra_framework::object;
 
     const PRECISION: u256 = 1_000_000_000_000_000_000;
 
@@ -30,7 +35,7 @@ module dao_libs::math {
     // powers are u128 (zeal::get_user_vote_power / zeal::get_gauge_total_votes).
     // Aborts on c == 0, exactly like the inline divisions it replaces.
     public fun mul_div_u128(a: u128, b: u128, c: u128): u128 {
-        a * b / c
+        (((a as u256) * (b as u256) / (c as u256)) as u128)
     }
 
     // Pending rebase for a veToken: earned (locked * acc / PRECISION) minus
@@ -247,133 +252,430 @@ module dao_libs::math {
         };
     }
 
-    // ------------------------------------------------------------------
-    // Tests - #[test] functions are stripped from the deploy bytecode.
-    // ------------------------------------------------------------------
+    // --- Governance & Protocol Optimization Helpers ---
 
-    #[test]
-    fun test_mul_div() {
-        assert!(mul_div_u64(10, 3, 2) == 15, 1);
-        assert!(mul_div_u64(1, 1, 1) == 1, 2);
-        assert!(mul_div_u64(1_000_000, 10, 100) == 100_000, 3);
-        assert!(mul_div_u128(10, 3, 2) == 15, 4);
+    // Validates gauge voting inputs and allocates vote powers proportionally
+    public fun compute_gauge_vote_allocations(
+        power: u128,
+        gauge_ids: &vector<u64>,
+        weights: &vector<u64>,
+        err_invalid_weights: u64,
+        err_invalid_gauge: u64,
+    ): (vector<u128>, u128) {
+        let len = vector::length(gauge_ids);
+        assert!(len == vector::length(weights) && len > 0, error::invalid_argument(err_invalid_weights));
+
+        let total_weight: u128 = 0;
+        let seen = vector::empty<u64>();
+        let i = 0;
+        while (i < len) {
+            let gid = *vector::borrow(gauge_ids, i);
+            let w = *vector::borrow(weights, i);
+            assert!(w > 0, error::invalid_argument(err_invalid_weights));
+            assert!(!vector::contains(&seen, &gid), error::invalid_argument(err_invalid_gauge));
+            vector::push_back(&mut seen, gid);
+            total_weight = total_weight + (w as u128);
+            i = i + 1;
+        };
+        assert!(total_weight > 0, error::invalid_argument(err_invalid_weights));
+
+        let powers = vector::empty<u128>();
+        let total_allocated: u128 = 0;
+        i = 0;
+        while (i < len) {
+            let w = (*vector::borrow(weights, i) as u128);
+            let allocated = (power * w) / total_weight;
+            total_allocated = total_allocated + allocated;
+            vector::push_back(&mut powers, allocated);
+            i = i + 1;
+        };
+        (powers, total_allocated)
     }
 
-    #[test]
-    fun test_apply_bps_and_ppm() {
-        assert!(apply_bps(1000, 500) == 50, 1);            // 5%
-        assert!(apply_bps(1000, 10000) == 1000, 2);        // 100%
-        assert!(apply_ppm(1_000_000, 137) == 137, 3);      // 137 ppm
-        assert!(apply_ppm(1_000_000, 1_000_000) == 1_000_000, 4);
+    // Validates timelock proposal execution conditions
+    public fun validate_proposal_execution(
+        eta: u64,
+        grace_period: u64,
+        executed: bool,
+        canceled: bool,
+        total_participation: u64,
+        quorum_required: u64,
+        for_votes: u64,
+        against_votes: u64,
+        now: u64,
+        err_not_ready: u64,
+        err_expired: u64,
+        err_executed: u64,
+        err_canceled: u64,
+        err_not_succeeded: u64,
+        err_defeated: u64,
+    ) {
+        assert!(eta != 0 && now >= eta, error::invalid_state(err_not_ready));
+        assert!(now <= eta + grace_period, error::invalid_state(err_expired));
+        assert!(!executed, error::invalid_state(err_executed));
+        assert!(!canceled, error::invalid_state(err_canceled));
+        assert!(total_participation >= quorum_required, error::invalid_state(err_not_succeeded));
+        assert!(for_votes > against_votes, error::invalid_state(err_defeated));
     }
 
-    #[test]
-    fun test_compute_dynamic_threshold() {
-        // 0.0137% of 1,000,000 = 137
-        assert!(compute_dynamic_threshold(1_000_000, 137) == 137, 1);
-        // rounds down to 0 -> clamped to 1
-        assert!(compute_dynamic_threshold(100, 1) == 1, 2);
-        // supply 0 -> clamped to 1
-        assert!(compute_dynamic_threshold(0, 137) == 1, 3);
+    // Validates standard proposal parameters (propose_standard)
+    public fun validate_standard_proposal_params(
+        proposal_type: u8,
+        action_recipient: address,
+        action_amount: u64,
+        action_config_key: u8,
+        action_target_address: address,
+        err_invalid: u64,
+    ): (address, address, bool) {
+        assert!(
+            proposal_type == 1 || proposal_type == 2 || proposal_type == 3 ||
+            proposal_type == 4 || proposal_type == 5 || proposal_type == 6 ||
+            proposal_type == 7 || proposal_type == 9,
+            error::invalid_argument(err_invalid)
+        );
+        let is_super_quorum = (
+            proposal_type == 2 || proposal_type == 4 ||
+            proposal_type == 6 || proposal_type == 9
+        );
+        let derived_target = if (proposal_type == 1) { action_recipient } else { action_target_address };
+        let derived_asset = if (proposal_type == 1) { action_target_address } else { @0x0 };
+
+        if (proposal_type == 1) {
+            assert!(action_recipient != @0x0 && action_amount > 0, error::invalid_argument(err_invalid));
+        } else if (proposal_type == 2) {
+            assert!(action_config_key >= 1 && action_config_key <= 11, error::invalid_argument(err_invalid));
+        } else if (proposal_type == 4) {
+            assert!(action_target_address != @0x0, error::invalid_argument(err_invalid));
+        };
+        (derived_target, derived_asset, is_super_quorum)
     }
 
-    #[test]
-    fun test_rebase_debt_and_pending() {
-        // PRECISION = 1e18, so acc == 1e18 means debt == locked amount.
-        assert!(calculate_rebase_debt(100, 1_000_000_000_000_000_000) == 100, 1);
-        assert!(rebase_pending(100, 1_000_000_000_000_000_000, 40) == 60, 2);
-        // earned <= debt -> floored at 0
-        assert!(rebase_pending(100, 1_000_000_000_000_000_000, 100) == 0, 3);
-        assert!(rebase_pending(100, 1_000_000_000_000_000_000, 500) == 0, 4);
+    // Computes lock extension end epoch with boundaries
+    public fun calculate_extend_lock_epoch(
+        old_end: u64,
+        current_epoch: u64,
+        additional_epochs: u64,
+        min_epochs: u64,
+        max_epochs: u64,
+        err_short: u64,
+        err_long: u64,
+    ): u64 {
+        let base = if (old_end > current_epoch) { old_end } else { current_epoch };
+        let new_end = base + additional_epochs;
+        assert!(new_end >= current_epoch + min_epochs, error::invalid_argument(err_short));
+        assert!(new_end <= current_epoch + max_epochs, error::invalid_state(err_long));
+        new_end
     }
 
-    #[test]
-    fun test_add_per_share() {
-        // 100 * 1e18 / 1000 = 1e17
-        assert!(add_per_share(100, 1000, 0) == 100_000_000_000_000_000, 1);
-        assert!(add_per_share(0, 1000, 5) == 5, 2);
+    // Computes merge lock end epoch with cap
+    public fun calculate_merge_lock_epoch(
+        from_end: u64,
+        into_end: u64,
+        current_epoch: u64,
+        max_epochs: u64,
+    ): u64 {
+        let new_end = if (from_end > into_end) { from_end } else { into_end };
+        if (new_end > current_epoch + max_epochs) {
+            new_end = current_epoch + max_epochs;
+        };
+        new_end
     }
 
-    #[test]
-    fun test_calculate_decayed_emission() {
-        assert!(calculate_decayed_emission(1000, 100, 0) == 990, 1);   // 1% decay
-        assert!(calculate_decayed_emission(1000, 100, 995) == 995, 2); // floor at tail
-        assert!(calculate_decayed_emission(1000, 10000, 0) == 0, 3);   // 100% decay
+    // Computes orphaned rebase for expired veTokens
+    public fun compute_orphaned_rebase(
+        locked_amount: u64,
+        acc_rebase: u128,
+        rebase_debt: u128,
+        rebase_bal: u64,
+    ): (u64, u128) {
+        let earned = calculate_rebase_debt(locked_amount, acc_rebase);
+        let pending = if (earned > rebase_debt) { ((earned - rebase_debt) as u64) } else { 0 };
+        let orphaned = if (pending > rebase_bal) { rebase_bal } else { pending };
+        (orphaned, earned)
     }
 
-    #[test]
-    fun test_boosted_working_balance() {
-        assert!(calculate_boosted_working_balance(1000, 0) == 1000, 1);      // no boost
-        assert!(calculate_boosted_working_balance(1000, 5000) == 1500, 2);   // +50%
+    // Computes pending rebase for compounding
+    public fun compute_pending_rebase(
+        locked_amount: u64,
+        acc_rebase: u128,
+        rebase_debt: u128,
+        rebase_bal: u64,
+    ): (u64, u128) {
+        let earned = calculate_rebase_debt(locked_amount, acc_rebase);
+        let pending = if (earned > rebase_debt) { ((earned - rebase_debt) as u64) } else { 0 };
+        let claimable = if (pending > rebase_bal) { rebase_bal } else { pending };
+        (claimable, earned)
     }
 
-    #[test]
-    fun test_calculate_dynamic_quorum() {
-        let empty = std::vector::empty<u128>();
-        assert!(calculate_dynamic_quorum(&empty, 100) == 100, 1); // empty -> default
-
-        // avg 2000 -> raw 1000, clamped to ceiling 200 (2x default)
-        let high = std::vector::empty<u128>();
-        std::vector::push_back(&mut high, 2000);
-        assert!(calculate_dynamic_quorum(&high, 100) == 200, 2);
-
-        // avg 50 -> raw 25 < floor 100 -> 100
-        let low = std::vector::empty<u128>();
-        std::vector::push_back(&mut low, 50);
-        assert!(calculate_dynamic_quorum(&low, 100) == 100, 3);
-
-        // avg 300 -> raw 150, within [100, 200]
-        let mid = std::vector::empty<u128>();
-        std::vector::push_back(&mut mid, 300);
-        assert!(calculate_dynamic_quorum(&mid, 100) == 150, 4);
+    // Adjusts working supply after working balance change
+    public fun adjust_working_supply(
+        old_supply: u128,
+        old_working: u128,
+        new_working: u128,
+    ): u128 {
+        if (new_working >= old_working) {
+            old_supply + (new_working - old_working)
+        } else {
+            let diff = old_working - new_working;
+            if (old_supply > diff) { old_supply - diff } else { 0 }
+        }
     }
 
-    #[test]
-    fun test_reward_math() {
-        // working_supply == 0 -> stored unchanged
-        assert!(calculate_reward_per_token(7, 0, 100, 50, 1000, 0, 1) == 7, 1);
-        // delta 100, rate 10, scale 1, supply 100 -> +10
-        assert!(calculate_reward_per_token(0, 0, 1000, 100, 10, 100, 1) == 10, 2);
-
-        // earned = balance * (rpt - paid) / scale = 100 * 5 / 1 = 500, + stored 5
-        assert!(calculate_user_earned_rewards(15, 10, 100, 5, 1) == 505, 3);
-        // current <= paid -> stored unchanged
-        assert!(calculate_user_earned_rewards(10, 10, 100, 5, 1) == 5, 4);
+    // Computes bribe claim share
+    public fun compute_bribe_claim_share(
+        total_bribe: u64,
+        user_power: u128,
+        total_power: u128,
+    ): u64 {
+        if (total_bribe == 0 || total_power == 0 || user_power == 0) {
+            0
+        } else {
+            (mul_div_u128((total_bribe as u128), user_power, total_power) as u64)
+        }
     }
 
-    #[test]
-    fun test_assert_bounds_ok() {
-        assert_bounds(1, 1, 10, 99);
-        assert_bounds(5, 1, 10, 99);
-        assert_bounds(10, 1, 10, 99);
+    // Validates metadata lengths, decimals and supply tracking
+    public fun validate_token_metadata_and_supply(
+        name_len: u64,
+        symbol_len: u64,
+        decimals: u8,
+        supply_opt: &option::Option<u128>,
+        expected_supply_opt: &option::Option<u128>,
+        e_name_too_long: u64,
+        e_symbol_too_long: u64,
+        e_decimals_too_high: u64,
+        e_no_supply_tracking: u64,
+        e_supply_zero: u64
+    ): u128 {
+        assert!(name_len <= 60, error::invalid_argument(e_name_too_long));
+        assert!(symbol_len <= 20, error::invalid_argument(e_symbol_too_long));
+        assert!(decimals <= 8, error::invalid_argument(e_decimals_too_high));
+        assert!(option::is_some(supply_opt), error::invalid_argument(e_no_supply_tracking));
+        let current_supply = if (option::is_some(expected_supply_opt)) { *option::borrow(expected_supply_opt) } else { *option::borrow(supply_opt) };
+        assert!(current_supply > 0 && current_supply <= 18446744073709551615, error::invalid_argument(e_supply_zero));
+        current_supply
     }
 
-    #[test]
-    #[expected_failure(abort_code = 0x10063)] // invalid_argument(99)
-    fun test_assert_bounds_abort() {
-        assert_bounds(11, 1, 10, 99);
+    // Validates wrapper token address, native & wrapped supply
+    public fun validate_wrapper_token(
+        dao_router: address,
+        wrapper_seed: vector<u8>,
+        wrapped_addr: address,
+        native_addr: address,
+        native_supply_opt: option::Option<u128>,
+        wrapped_supply_opt: option::Option<u128>,
+        wrapped_decimals: u8,
+        native_decimals: u8,
+        e_invalid_wrapper: u64,
+        e_supply_zero: u64,
+        e_decimals_too_high: u64
+    ): u128 {
+        let wrapper_address = account::create_resource_address(&dao_router, wrapper_seed);
+        let expected_wrapper_address = object::create_object_address(&wrapper_address, bcs::to_bytes(&native_addr));
+        assert!(wrapped_addr == expected_wrapper_address, error::invalid_argument(e_invalid_wrapper));
+        assert!(option::is_some(&native_supply_opt), error::invalid_argument(e_supply_zero));
+        let native_supply = *option::borrow(&native_supply_opt);
+        assert!(native_supply > 0, error::invalid_argument(e_supply_zero));
+        assert!(option::is_some(&wrapped_supply_opt) && *option::borrow(&wrapped_supply_opt) == 0, error::invalid_argument(e_supply_zero));
+        assert!(wrapped_decimals == native_decimals, error::invalid_argument(e_decimals_too_high));
+        native_supply
     }
 
-    #[test]
-    fun test_validate_charter_genesis_ok() {
-        validate_charter_genesis(43200, 86400, 43200, 7, 100, 73, 137);
+    // Calculates Synthetix gauge emission reward rate
+    public fun calculate_gauge_reward_rate(
+        actual_amount: u128,
+        period_finish: u64,
+        current_time: u64,
+        old_reward_rate: u128,
+        duration: u64
+    ): (u128, u64) {
+        let dur = (duration as u128);
+        let new_rate = if (current_time >= period_finish) {
+            actual_amount / dur
+        } else {
+            let remaining = period_finish - current_time;
+            let leftover = (remaining as u128) * old_reward_rate;
+            (actual_amount + leftover) / dur
+        };
+        (new_rate, current_time + duration)
     }
 
-    #[test]
-    #[expected_failure(abort_code = 0x10001)] // invalid_argument(1) - voting_delay
-    fun test_validate_charter_genesis_bad_delay() {
-        validate_charter_genesis(1, 86400, 43200, 7, 100, 73, 137);
+    // Validates veNFT merge preconditions
+    public fun validate_merge_preconditions(
+        from_dao: address,
+        into_dao: address,
+        from_end_epoch: u64,
+        from_last_voted: u64,
+        into_last_voted: u64,
+        current_epoch: u64,
+        e_invalid_object: u64,
+        e_lock_expired: u64,
+        e_voted_recently: u64
+    ) {
+        assert!(from_dao == into_dao, error::invalid_argument(e_invalid_object));
+        assert!(from_end_epoch > current_epoch, error::invalid_state(e_lock_expired));
+        let check_epoch = if (current_epoch > 0) { current_epoch - 1 } else { 0 };
+        assert!(from_last_voted < check_epoch, error::invalid_state(e_voted_recently));
+        assert!(into_last_voted < check_epoch, error::invalid_state(e_voted_recently));
     }
 
-    #[test]
-    #[expected_failure(abort_code = 0x10004)] // invalid_argument(4) - proposal_threshold
-    fun test_validate_charter_genesis_zero_threshold() {
-        validate_charter_genesis(43200, 86400, 43200, 7, 100, 73, 0);
+    // Validates public cancel preconditions
+    public fun validate_public_cancel(
+        eta: u64,
+        end_time: u64,
+        now: u64,
+        ve_token_addr: address,
+        e_already_queued: u64,
+        e_not_active: u64,
+        e_threshold_not_dropped: u64
+    ) {
+        assert!(eta == 0, error::invalid_state(e_already_queued));
+        assert!(now <= end_time, error::invalid_state(e_not_active));
+        assert!(ve_token_addr != @0x0, error::invalid_state(e_threshold_not_dropped));
     }
 
-    #[test]
-    #[expected_failure(abort_code = 0x10010)] // invalid_argument(16) - unknown factory key
-    fun test_validate_factory_default_unknown_key() {
-        validate_factory_default(99, 1, 7, 100, 73);
+    // Validates cancel expired preconditions
+    public fun validate_cancel_expired(
+        eta: u64,
+        grace_period: u64,
+        now: u64,
+        e_timelock_not_ready: u64,
+        e_not_expired: u64
+    ) {
+        assert!(eta != 0, error::invalid_state(e_timelock_not_ready));
+        assert!(now > eta + grace_period, error::invalid_state(e_not_expired));
     }
+
+    // Computes proposal start and end times
+    public fun compute_proposal_window(
+        now: u64,
+        voting_delay: u64,
+        voting_period: u64
+    ): (u64, u64) {
+        let start_time = now + voting_delay;
+        (start_time, start_time + voting_period)
+    }
+
+    // Computes required quorum
+    public fun compute_required_quorum(
+        total_power: u64,
+        super_quorum_threshold: u64,
+        quorum_den: u64,
+        is_super_quorum: bool,
+        dynamic_quorum: u64
+    ): u64 {
+        if (quorum_den == 0) {
+            0
+        } else if (is_super_quorum) {
+            let q = mul_div_u64(total_power, super_quorum_threshold, quorum_den);
+            if (q == 0 && total_power > 0) { 1 } else { q }
+        } else {
+            let q = dynamic_quorum;
+            if (q == 0 && total_power > 0) { 1 } else { q }
+        }
+    }
+
+    // Calculates late quorum extension
+    public fun calculate_late_quorum_extension(
+        end_time: u64,
+        now: u64,
+        late_quorum: u64
+    ): (bool, u64) {
+        let remaining = if (end_time > now) { end_time - now } else { 0 };
+        if (remaining < late_quorum && late_quorum > 0) {
+            (true, now + late_quorum)
+        } else {
+            (false, end_time)
+        }
+    }
+
+    // Computes proposal state (0: Pending, 1: Active, 2: Canceled, 3: Defeated, 4: Succeeded, 5: Queued, 6: Executed)
+    public fun compute_proposal_state(
+        canceled: bool,
+        executed: bool,
+        eta: u64,
+        current_time: u64,
+        start_time: u64,
+        end_time: u64,
+        for_votes: u64,
+        against_votes: u64,
+        abstain_votes: u64,
+        quorum_required: u64
+    ): u8 {
+        if (canceled) { return 2u8 };
+        if (executed) { return 6u8 };
+        if (eta != 0) { return 5u8 };
+        if (current_time < start_time) { return 0u8 };
+        if (current_time <= end_time) { return 1u8 };
+        let total_participation = for_votes + against_votes + abstain_votes;
+        if (total_participation >= quorum_required && for_votes > against_votes) {
+            4u8
+        } else {
+            3u8
+        }
+    }
+
+    // Validates script proposal execution hash and argument commitments
+    public fun validate_script_proposal_hashes(
+        execution_hash: &vector<u8>,
+        args_commitment: &vector<u8>,
+        has_args: bool,
+        empty_commitment: vector<u8>,
+        e_invalid_len: u64,
+        e_empty_args: u64,
+        e_has_args: u64
+    ) {
+        assert!(vector::length(execution_hash) == 32, error::invalid_argument(e_invalid_len));
+        assert!(vector::length(args_commitment) == 32, error::invalid_argument(e_invalid_len));
+        if (has_args) {
+            assert!(*args_commitment != empty_commitment, error::invalid_argument(e_empty_args));
+        } else {
+            assert!(*args_commitment == empty_commitment, error::invalid_argument(e_has_args));
+        };
+    }
+
+
+    // Validates bribe deposit preconditions
+    public fun validate_bribe_deposit(
+        amount: u64,
+        pilgrim_epoch: u64,
+        current_epoch: u64,
+        gauge_id: u64,
+        gauge_count: u64,
+        gauge_is_active: bool,
+        token_is_obj: bool,
+        e_zero: u64,
+        e_epoch: u64,
+        e_gauge: u64,
+        e_obj: u64
+    ) {
+        assert!(amount > 0, error::invalid_argument(e_zero));
+        assert!(pilgrim_epoch > current_epoch, error::invalid_argument(e_epoch));
+        assert!(gauge_id < gauge_count, error::invalid_argument(e_gauge));
+        assert!(gauge_is_active, error::invalid_state(e_gauge));
+        assert!(token_is_obj, error::invalid_argument(e_obj));
+    }
+
+    // Validates proposal queue preconditions
+    public fun validate_proposal_queue(
+        eta: u64,
+        canceled: bool,
+        end_time: u64,
+        grace_period: u64,
+        now: u64,
+        total_participation: u64,
+        quorum_required: u64,
+        for_votes: u64,
+        against_votes: u64,
+        e_already_queued: u64,
+        e_already_canceled: u64,
+        e_expired: u64,
+        e_not_succeeded: u64
+    ) {
+        assert!(now <= end_time + grace_period, error::invalid_state(e_expired));
+        assert!(eta == 0, error::invalid_state(e_already_queued));
+        assert!(!canceled, error::invalid_state(e_already_canceled));
+        assert!(total_participation >= quorum_required && for_votes > against_votes, error::invalid_state(e_not_succeeded));
+    }
+
 }

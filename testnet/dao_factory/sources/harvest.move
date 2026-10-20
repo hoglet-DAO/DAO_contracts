@@ -108,7 +108,11 @@ module dao_factory::harvest {
             // Redirect them to the DAO treasury instead, where governance
             // can recover them.
             let dest_store = primary_fungible_store::ensure_primary_store_exists(dao_address, fungible_asset::asset_metadata(&reward));
-            dispatchable_fungible_asset::deposit(dest_store, reward);
+            if (tax_router::has_tax_free_router(dao_address)) {
+                tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), dest_store, reward);
+            } else {
+                dispatchable_fungible_asset::deposit(dest_store, reward);
+            };
         };
 
         event::emit(RewardsInjected {
@@ -149,6 +153,13 @@ module dao_factory::harvest {
         let earned_u128 = (((locked_amount as u256) * (vault.acc_reward_per_share as u256) / PRECISION) as u128);
         let pending_u128 = if (earned_u128 > debt) { earned_u128 - debt } else { 0 };
         let pending = (pending_u128 as u64);
+        if (pending == 0) return;
+
+        // CRIT-05: Cap pending to physical vault balance so rounding deficits never block withdraw
+        let available = supra_framework::fungible_asset::balance(vault.store);
+        if (pending > available) {
+            pending = available;
+        };
         if (pending == 0) return;
 
         // Update debt to the current accumulator.

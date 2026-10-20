@@ -1,11 +1,14 @@
 module dao_factory::anchor {
     friend dao_factory::seal;
     use std::signer;
+    use std::vector;
+    use dao_tax_router::tax_router;
     use std::error;
     use supra_framework::timestamp;
     use supra_framework::event;
     
     use dao_factory::ledger;
+    use dao_libs::math;
     use dao_factory::charter;
     use dao_factory::legacy;
     use dao_factory::sentinel;
@@ -64,19 +67,31 @@ module dao_factory::anchor {
     // Queues an approved proposal for execution after the timelock.
     // Anyone can call this function if the proposal meets the conditions.
     public entry fun queue_proposal(dao_address: address, proposal_id: u64) {
-        let (_, _, end_time, eta, executed, canceled, for_votes, against_votes, abstain_votes) = ledger::get_proposal_details(dao_address, proposal_id);
+        let (_, _, end_time, eta, _executed, canceled, for_votes, against_votes, abstain_votes) = ledger::get_proposal_details(dao_address, proposal_id);
         
         assert_active_and_ended(dao_address, end_time);
-        
-        // Cannot queue twice
-        assert!(eta == 0, error::invalid_state(E_ALREADY_QUEUED));
-        assert!(!canceled, error::invalid_state(E_ALREADY_CANCELED));
-        
+        let proposal_type = ledger::get_proposal_type(dao_address, proposal_id);
+        if (proposal_type != 4) {
+            sentinel::assert_not_paused(dao_address);
+        };
+        let grace_period = charter::get_grace_period(dao_address);
         let quorum_required = ledger::get_proposal_quorum(dao_address, proposal_id);
         let total_participation = for_votes + against_votes + abstain_votes;
-        
-        // Must reach quorum AND have more for votes than against votes
-        assert!(total_participation >= quorum_required && for_votes > against_votes, error::invalid_state(E_PROPOSAL_NOT_SUCCEEDED));
+        math::validate_proposal_queue(
+            eta,
+            canceled,
+            end_time,
+            grace_period,
+            timestamp::now_seconds(),
+            total_participation,
+            quorum_required,
+            for_votes,
+            against_votes,
+            E_ALREADY_QUEUED,
+            E_ALREADY_CANCELED,
+            E_PROPOSAL_EXPIRED,
+            E_PROPOSAL_NOT_SUCCEEDED
+        );
         
         let timelock_delay = charter::get_timelock_delay(dao_address);
         let eta = timestamp::now_seconds() + timelock_delay;
@@ -94,6 +109,17 @@ module dao_factory::anchor {
     // public entry point is `seal::resolve`, which checks both and
     // then delegates here. This closes the "call anchor::resolve directly to
     // bypass seal" attack (HOG-01).
+    fun is_valid_hash(h: &vector<u8>): bool {
+        let len = vector::length(h);
+        if (len != 32) return false;
+        let i = 0;
+        while (i < len) {
+            if (*vector::borrow(h, i) != 0) return true;
+            i = i + 1;
+        };
+        false
+    }
+
     public(friend) fun resolve(dao_address: address, proposal_id: u64): signer {
         // Type 9 hands the DAO's signer to ARBITRARY code. A guardian (who can
         // ONLY cancel, never execute) is required as a safety net: if a malicious
@@ -103,6 +129,7 @@ module dao_factory::anchor {
             std::option::is_some(&charter::get_guardian(dao_address)),
             error::invalid_state(E_NO_GUARDIAN_CONFIGURED)
         );
+        assert!(charter::is_blessed(dao_address), error::invalid_state(E_NOT_BLESSED));
 
         validate_and_mark_executed(dao_address, proposal_id);
 
@@ -110,6 +137,7 @@ module dao_factory::anchor {
         assert!(proposal_type == 8, error::invalid_argument(E_INVALID_PROPOSAL_TYPE));
 
         let expected_hash = ledger::get_proposal_execution_hash(dao_address, proposal_id);
+        assert!(is_valid_hash(&expected_hash), error::invalid_argument(E_SCRIPT_HASH_MISMATCH));
         assert!(
             transaction_context::get_script_hash() == expected_hash,
             error::invalid_argument(E_SCRIPT_HASH_MISMATCH)
@@ -121,7 +149,7 @@ module dao_factory::anchor {
     }
 
     // Executes a proposal action (Treasury, Config, Gauge, etc.) that has passed the timelock.
-    public entry fun execute_action(caller: &signer, dao_address: address, proposal_id: u64) {
+    public entry fun execute_action(_caller: &signer, dao_address: address, proposal_id: u64) {
         validate_and_mark_executed(dao_address, proposal_id);
 
         let dao_signer = ledger::generate_signer(dao_address);
@@ -139,11 +167,15 @@ module dao_factory::anchor {
             } else {
                 // Otherwise, treat it as a FungibleAsset
                 let metadata = object::address_to_object<Metadata>(asset_address);
-                // Dispatch-aware: works for dispatchable FAs (foreign launch tokens) AND plain FAs.
                 let from_store = primary_fungible_store::ensure_primary_store_exists(signer::address_of(&dao_signer), metadata);
-                let fa = dispatchable_fungible_asset::withdraw(&dao_signer, from_store, amount);
                 let to_store = primary_fungible_store::ensure_primary_store_exists(recipient, metadata);
-                dispatchable_fungible_asset::deposit(to_store, fa);
+                if (tax_router::has_tax_free_router(dao_address) && asset_address == legacy::get_token_metadata_address(dao_address)) {
+                    let fa = tax_router::withdraw_tax_free(dao_address, &dao_signer, from_store, amount);
+                    tax_router::deposit_tax_free(dao_address, &dao_signer, to_store, fa);
+                } else {
+                    let fa = dispatchable_fungible_asset::withdraw(&dao_signer, from_store, amount);
+                    dispatchable_fungible_asset::deposit(to_store, fa);
+                };
             };
         } else if (proposal_type == 2) { // Config Change
             assert!(charter::is_blessed(dao_address), error::invalid_state(E_NOT_BLESSED));
@@ -186,6 +218,7 @@ module dao_factory::anchor {
             let new_guardian = ledger::extract_proposal_action_guardian(dao_address, proposal_id);
             if (new_guardian == @0x0) {
                 charter::update_guardian(&dao_signer, std::option::none());
+                sentinel::force_unpause_by_governance(dao_address);
             } else {
                 charter::update_guardian(&dao_signer, std::option::some(new_guardian));
             };
@@ -230,6 +263,7 @@ module dao_factory::anchor {
                 abort error::invalid_argument(E_INVALID_ACTION)
             };
         } else if (proposal_type == 9) { // Script Allow-list (type 9)
+            assert!(charter::is_blessed(dao_address), error::invalid_state(E_NOT_BLESSED));
             let (script_id, add) = ledger::get_proposal_action_script_allow(dao_address, proposal_id);
             if (add) {
                 vault::add(&dao_signer, script_id);
@@ -262,14 +296,17 @@ module dao_factory::anchor {
     // This acts as a decentralized immune system against proposers who lose their community backing.
     public entry fun public_cancel_proposal(dao_address: address, proposal_id: u64) {
         let (proposer, _, end_time, eta, _, _, _, _, _) = ledger::get_proposal_details(dao_address, proposal_id);
-        assert!(eta == 0, error::invalid_state(E_ALREADY_QUEUED));
-        assert!(timestamp::now_seconds() <= end_time, error::invalid_state(E_PROPOSAL_NOT_ACTIVE));
         let (_, _, _, proposal_threshold, _, _, _, _) = charter::get_dao_config_view(dao_address);
         let ve_token_addr = ledger::get_proposal_ve_token(dao_address, proposal_id);
-        
-        // If the NFT address is 0x0, it means the proposal was created before the update or is invalid.
-        // We shouldn't allow public cancellation if we can't verify it.
-        assert!(ve_token_addr != @0x0, error::invalid_state(E_THRESHOLD_NOT_DROPPED));
+        math::validate_public_cancel(
+            eta,
+            end_time,
+            timestamp::now_seconds(),
+            ve_token_addr,
+            E_ALREADY_QUEUED,
+            E_PROPOSAL_NOT_ACTIVE,
+            E_THRESHOLD_NOT_DROPPED
+        );
 
         let current_power = if (object::object_exists<legacy::VeToken>(ve_token_addr)) {
             let ve_token_obj = object::address_to_object<legacy::VeToken>(ve_token_addr);
@@ -297,10 +334,8 @@ module dao_factory::anchor {
     public entry fun cancel_expired_proposal(dao_address: address, proposal_id: u64) {
         let (_, _, _, eta, _, _, _, _, _) = ledger::get_proposal_details(dao_address, proposal_id);
         
-        assert!(eta != 0, error::invalid_state(E_TIMELOCK_NOT_READY));
-
         let grace_period = charter::get_grace_period(dao_address);
-        assert!(timestamp::now_seconds() > eta + grace_period, error::invalid_state(E_PROPOSAL_NOT_EXPIRED));
+        math::validate_cancel_expired(eta, grace_period, timestamp::now_seconds(), E_TIMELOCK_NOT_READY, E_PROPOSAL_NOT_EXPIRED);
 
         mark_as_canceled(dao_address, proposal_id);
     }
@@ -352,20 +387,13 @@ module dao_factory::anchor {
         assert!(charter::is_active(dao_address), error::invalid_state(E_PROPOSAL_NOT_ACTIVE));
 
         let (_, _, _, eta, executed, canceled, for_votes, against_votes, abstain_votes) = ledger::get_proposal_details(dao_address, proposal_id);
-        
-        assert!(eta != 0, error::invalid_state(E_TIMELOCK_NOT_READY)); 
-        assert!(timestamp::now_seconds() >= eta, error::invalid_state(E_TIMELOCK_NOT_READY)); 
-        
         let grace_period = charter::get_grace_period(dao_address);
-        assert!(timestamp::now_seconds() <= eta + grace_period, error::invalid_state(E_PROPOSAL_EXPIRED));
-
-        assert!(!executed, error::invalid_state(E_ALREADY_EXECUTED));
-        assert!(!canceled, error::invalid_state(E_ALREADY_CANCELED));
-        
         let quorum_required = ledger::get_proposal_quorum(dao_address, proposal_id);
         let total_participation = for_votes + against_votes + abstain_votes;
-        assert!(total_participation >= quorum_required, error::invalid_state(E_PROPOSAL_NOT_SUCCEEDED));
-        assert!(for_votes > against_votes, error::invalid_state(E_PROPOSAL_DEFEATED));
+        math::validate_proposal_execution(
+            eta, grace_period, executed, canceled, total_participation, quorum_required, for_votes, against_votes, timestamp::now_seconds(),
+            E_TIMELOCK_NOT_READY, E_PROPOSAL_EXPIRED, E_ALREADY_EXECUTED, E_ALREADY_CANCELED, E_PROPOSAL_NOT_SUCCEEDED, E_PROPOSAL_DEFEATED
+        );
         
         ledger::set_proposal_executed(dao_address, proposal_id);
     }

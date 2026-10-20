@@ -121,7 +121,7 @@ module dao_router::dao_wrapper {
 
     public entry fun initialize(admin: &signer) {
         let admin_addr = signer::address_of(admin);
-        assert!(admin_addr == @HOGL, error::permission_denied(ERROR_NOT_ADMIN));
+        assert!(admin_addr == @dao_router, error::permission_denied(ERROR_NOT_ADMIN));
         if (!exists<WrapperRegistry>(@dao_router)) {
             let (wrapper_signer, signer_cap) = account::create_resource_account(admin, WRAPPER_SEED);
             let wrapper_address = signer::address_of(&wrapper_signer);
@@ -129,9 +129,9 @@ module dao_router::dao_wrapper {
             move_to(admin, WrapperRegistry {
                 wrapper_address,
                 signer_cap,
-                admin: @HOGL,
+                admin: @dao_router,
                 fee_bps: DEFAULT_FLASH_LOAN_FEE_BPS,
-                fee_receiver: @HOGL,
+                fee_receiver: @dao_router,
                 native_to_wrapper: smart_table::new(),
                 wrapper_to_native: smart_table::new(),
             });
@@ -152,20 +152,14 @@ module dao_router::dao_wrapper {
             let icon_uri = fungible_asset::icon_uri(native_metadata);
             let project_uri = fungible_asset::project_uri(native_metadata);
 
-            // Safe AMM-style naming with strict overflow protection:
+            // Safe AMM-style naming with strict overflow protection and UTF-8 safety (MED-11):
             // "Wrapped " is 8 chars, max native name allowed = 32 - 8 = 24 chars
             let mut_name = string::utf8(b"Wrapped ");
-            if (string::length(&name) > 24) {
-                name = string::sub_string(&name, 0, 24);
-            };
-            string::append(&mut mut_name, name);
+            string::append(&mut mut_name, safe_truncate_string(&name, 24));
 
             // "gw" is 2 chars, max native symbol allowed = 10 - 2 = 8 chars
             let mut_symbol = string::utf8(b"gw");
-            if (string::length(&symbol) > 8) {
-                symbol = string::sub_string(&symbol, 0, 8);
-            };
-            string::append(&mut mut_symbol, symbol);
+            string::append(&mut mut_symbol, safe_truncate_string(&symbol, 8));
 
             let wrapper_signer = account::create_signer_with_capability(&registry.signer_cap);
             let seed = object::object_address(&native_metadata);

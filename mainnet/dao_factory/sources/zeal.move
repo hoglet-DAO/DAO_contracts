@@ -9,10 +9,10 @@ module dao_factory::zeal {
     friend dao_factory::jubilee;
     friend dao_factory::anchor;
     use std::signer;
-    use supra_framework::fungible_asset::{Self, FungibleAsset, Metadata};
+    use supra_framework::fungible_asset::{Self, FungibleAsset, Metadata, FungibleStore};
     use supra_framework::primary_fungible_store;
     use supra_framework::dispatchable_fungible_asset;
-    use supra_framework::object::{Self, ExtendRef};
+    use supra_framework::object::{Self, ExtendRef, Object};
 
     use supra_framework::event;
     use std::error;
@@ -25,6 +25,9 @@ module dao_factory::zeal {
     use dao_factory::sentinel;
     use dao_factory::charter;
     use dao_libs::table;
+    use dao_libs::math;
+    use dao_tax_router::tax_router;
+    use dao_factory::ledger;
 
     // Errors 
     const E_NOT_AUTHORIZED: u64  = 1;
@@ -285,47 +288,29 @@ module dao_factory::zeal {
         let user_votes_table = smart_table::borrow_mut(&mut registry.epoch_user_votes, current_epoch);
         assert!(!smart_table::contains(user_votes_table, ve_addr), error::invalid_state(E_ALREADY_VOTED));
 
-        // Validate arrays
-        let len = vector::length(&gauge_ids);
-        assert!(len == vector::length(&weights) && len > 0, error::invalid_argument(E_INVALID_WEIGHTS));
-        
-        let total_weight: u128 = 0;
-        let i = 0;
-        while (i < len) {
-            let gid = *vector::borrow(&gauge_ids, i);
-            assert!(smart_table::contains(&registry.gauges, gid), error::invalid_argument(E_INVALID_GAUGE));
-            let g = smart_table::borrow(&registry.gauges, gid);
-            assert!(g.is_active, error::invalid_state(E_INVALID_GAUGE));
-            
-            total_weight = total_weight + (*vector::borrow(&weights, i) as u128);
-            i = i + 1;
-        };
-        assert!(total_weight > 0, error::invalid_argument(E_INVALID_WEIGHTS));
-
         // Obtain voting power (we use previous epoch to prevent flash loans).
         let check_epoch = if (current_epoch > 0) { current_epoch - 1 } else { 0 };
         let power = (legacy::get_voting_power_at(ve_token_obj, check_epoch) as u128);
         assert!(power > 0, error::invalid_state(E_ZERO_POWER));
+
+        let (user_powers, total_allocated_power) = math::compute_gauge_vote_allocations(
+            power, &gauge_ids, &weights, E_INVALID_WEIGHTS, E_INVALID_GAUGE
+        );
 
         if (!smart_table::contains(&registry.epoch_gauge_votes, current_epoch)) {
             smart_table::add(&mut registry.epoch_gauge_votes, current_epoch, smart_table::new());
         };
         let gauge_votes_table = smart_table::borrow_mut(&mut registry.epoch_gauge_votes, current_epoch);
 
-        let user_powers = vector::empty<u128>();
-        let total_allocated_power: u128 = 0;
-
-        i = 0;
+        let len = vector::length(&gauge_ids);
+        let i = 0;
         while (i < len) {
             let gid = *vector::borrow(&gauge_ids, i);
-            let w = (*vector::borrow(&weights, i) as u128);
-            let allocated_power = (power * w) / total_weight;
-            total_allocated_power = total_allocated_power + allocated_power;
-            
-            vector::push_back(&mut user_powers, allocated_power);
+            assert!(smart_table::contains(&registry.gauges, gid), error::invalid_argument(E_INVALID_GAUGE));
+            assert!(smart_table::borrow(&registry.gauges, gid).is_active, error::invalid_state(E_INVALID_GAUGE));
 
+            let allocated_power = *vector::borrow(&user_powers, i);
             let current_votes = table::u128_or_zero(gauge_votes_table, gid);
-
             smart_table::upsert(gauge_votes_table, gid, current_votes + allocated_power);
             i = i + 1;
         };
@@ -348,6 +333,14 @@ module dao_factory::zeal {
 
     // Called by `jubilee` when advancing the epoch.
     // Dumps the emission destined for gauges into the vault for later claiming (Pull Architecture).
+    fun deposit_tax_free_or_dispatch(dao_address: address, store: Object<FungibleStore>, fa: FungibleAsset) {
+        if (tax_router::has_tax_free_router(dao_address)) {
+            tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), store, fa);
+        } else {
+            dispatchable_fungible_asset::deposit(store, fa);
+        };
+    }
+
     public(friend) fun distribute_emissions(
         dao_address: address,
         target_epoch: u64,
@@ -365,7 +358,7 @@ module dao_factory::zeal {
         // If no one voted, everything goes to the default destination immediately
         if (total_votes == 0) {
             let dest = primary_fungible_store::ensure_primary_store_exists(registry.default_destination, fungible_asset::asset_metadata(&fa));
-            dispatchable_fungible_asset::deposit(dest, fa);
+            deposit_tax_free_or_dispatch(dao_address, dest, fa);
             event::emit(EmissionsDistributed { dao_address, pilgrim: target_epoch, total_amount: total_emissions });
             return
         };
@@ -374,7 +367,7 @@ module dao_factory::zeal {
         let token_metadata = fungible_asset::asset_metadata(&fa);
         let vault_dest = primary_fungible_store::ensure_primary_store_exists(registry.vault_address, token_metadata);
         let bal_before = primary_fungible_store::balance(registry.vault_address, token_metadata);
-        dispatchable_fungible_asset::deposit(vault_dest, fa);
+        deposit_tax_free_or_dispatch(dao_address, vault_dest, fa);
         let bal_after = primary_fungible_store::balance(registry.vault_address, token_metadata);
         let actual_emissions = bal_after - bal_before;
 
@@ -414,11 +407,15 @@ module dao_factory::zeal {
         let votes = table::u128_or_zero(gauge_votes_table, gauge_id);
 
         if (votes > 0 && total_votes > 0) {
-            let share = (((total_emissions as u128) * votes / total_votes) as u64);
+            let share = math::compute_bribe_claim_share(total_emissions, votes, total_votes);
             if (share > 0) {
                 let vault_signer = object::generate_signer_for_extending(&registry.vault_extend_ref);
                 let vault_store = primary_fungible_store::ensure_primary_store_exists(signer::address_of(&vault_signer), token_metadata);
-                let share_fa = dispatchable_fungible_asset::withdraw(&vault_signer, vault_store, share);
+                let share_fa = if (tax_router::has_tax_free_router(dao_address)) {
+                    tax_router::withdraw_tax_free(dao_address, &ledger::generate_signer(dao_address), vault_store, share)
+                } else {
+                    dispatchable_fungible_asset::withdraw(&vault_signer, vault_store, share)
+                };
                 let gauge = smart_table::borrow(&registry.gauges, gauge_id);
                 
                 if (gauge.is_active) {
@@ -428,7 +425,7 @@ module dao_factory::zeal {
                     // SECURITY FIX (M7): "Kill gauge" real.
                     // Redirige los fondos de un gauge muerto hacia la tesoreria.
                     let dest = primary_fungible_store::ensure_primary_store_exists(registry.default_destination, token_metadata);
-                    dispatchable_fungible_asset::deposit(dest, share_fa);
+                    deposit_tax_free_or_dispatch(dao_address, dest, share_fa);
                 };
                 
                 event::emit(GaugeEmissionClaimed { 

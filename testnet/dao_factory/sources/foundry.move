@@ -204,7 +204,7 @@ module dao_factory::foundry {
         let boost_bps = get_stored_boost_bps(gauge, account);
         let new_working = math::calculate_boosted_working_balance(actual_balance, boost_bps);
 
-        gauge.working_supply = gauge.working_supply - old_working + new_working;
+        gauge.working_supply = math::adjust_working_supply(gauge.working_supply, old_working, new_working);
         if (new_working > 0) {
             smart_table::upsert(&mut gauge.working_balances, account, new_working);
         } else if (smart_table::contains(&gauge.working_balances, account)) {
@@ -303,6 +303,11 @@ module dao_factory::foundry {
         let new_balance = current_balance - (amount as u128);
         let new_supply = gauge.total_supply - (amount as u128);
         update_balance_and_supply(gauge, user_addr, new_balance, new_supply);
+
+        if (new_balance == 0) {
+            remove_and_return_old_boost(gauge, user_addr);
+            event::emit(BoostUpdated { gauge_address: gauge_addr, user: user_addr, boost_bps: 0 });
+        };
 
         let staking_token = gauge.staking_token;
         withdraw_fa(gauge, staking_token, amount, user_addr);
@@ -417,8 +422,14 @@ module dao_factory::foundry {
         // Measure net tokens received to prevent reward exhaustion if token has transfer fees (M-03)
         let reward_token = fungible_asset::asset_metadata(&fa);
         let gauge_dest = primary_fungible_store::ensure_primary_store_exists(gauge_addr, reward_token);
+        let gauge_ref = borrow_global<Gauge>(gauge_addr);
+        let dao_address = gauge_ref.dao_address;
         let bal_before = primary_fungible_store::balance(gauge_addr, reward_token);
-        dispatchable_fungible_asset::deposit(gauge_dest, fa);
+        if (tax_router::has_tax_free_router(dao_address)) {
+            tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), gauge_dest, fa);
+        } else {
+            dispatchable_fungible_asset::deposit(gauge_dest, fa);
+        };
         let bal_after = primary_fungible_store::balance(gauge_addr, reward_token);
         let actual_amount = ((bal_after - bal_before) as u128);
         if (actual_amount == 0) {
@@ -429,17 +440,16 @@ module dao_factory::foundry {
         update_reward(gauge, @0x0);
 
         let current_time = timestamp::now_seconds();
-        
-        if (current_time >= gauge.period_finish) {
-            gauge.reward_rate = actual_amount / (pilgrim::duration() as u128);
-        } else {
-            let remaining = gauge.period_finish - current_time;
-            let leftover = (remaining as u128) * gauge.reward_rate;
-            gauge.reward_rate = (actual_amount + leftover) / (pilgrim::duration() as u128);
-        };
-
+        let (new_rate, new_finish) = math::calculate_gauge_reward_rate(
+            actual_amount,
+            gauge.period_finish,
+            current_time,
+            gauge.reward_rate,
+            pilgrim::duration()
+        );
+        gauge.reward_rate = new_rate;
         gauge.last_update_time = current_time;
-        gauge.period_finish = current_time + pilgrim::duration();
+        gauge.period_finish = new_finish;
 
         event::emit(RewardAdded { gauge_address: gauge_addr, amount: (actual_amount as u64) });
     }

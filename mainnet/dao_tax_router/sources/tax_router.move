@@ -12,6 +12,7 @@ module dao_tax_router::tax_router {
     const E_ROUTER_ALREADY_REGISTERED: u64 = 3;
     const E_ROUTER_NOT_REGISTERED: u64 = 4;
     const E_ROUTER_MASTER_UNREMOVABLE: u64 = 5;
+    const E_BLACKLISTED: u64 = 6;
 
     // FIX (audit13 R-1) Signer-proof router registry: the TaxFree bypass is
     // only reachable by modules holding the signer of a whitelisted protocol
@@ -182,6 +183,11 @@ module dao_tax_router::tax_router {
             error::permission_denied(E_NOT_STORE_OWNER)
         );
         let router_res = borrow_global<TaxFreeRouter>(dao_address);
+        let token_addr = smart_token::cap_token_address(&router_res.cap);
+        assert!(
+            !smart_token::is_blacklisted(token_addr, signer::address_of(owner)),
+            error::permission_denied(E_BLACKLISTED)
+        );
         let fa = smart_token::withdraw_tax_free(&router_res.cap, from_store, amount);
         smart_token::deposit_tax_free(&router_res.cap, to_store, fa);
     }

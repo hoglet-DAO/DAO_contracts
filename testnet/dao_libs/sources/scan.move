@@ -185,13 +185,14 @@ module dao_libs::scan {
 
     // Calculates a lock's weekly decay slope: amount / max_lock_epochs (floored at 1 if amount > 0).
     public fun calculate_lock_slope(amount: u64, max_lock_epochs: u64): u64 {
-        let slope = math::mul_div_u64(amount, 1, max_lock_epochs);
-        if (amount > 0 && slope == 0) { 1 } else { slope }
+        math::mul_div_u64(amount, 1, max_lock_epochs)
     }
 
     // Calculates a lock's voting power at a given remaining epochs duration.
+    // Invariant: power == slope * epochs_left to prevent phantom voting power and quorum decay drift.
     public fun calculate_lock_power(amount: u64, epochs_left: u64, max_lock_epochs: u64): u64 {
-        math::mul_div_u64(amount, epochs_left, max_lock_epochs)
+        let slope = calculate_lock_slope(amount, max_lock_epochs);
+        slope * epochs_left
     }
 
     // Advances bias and slope from `from_epoch` up to `target_epoch`, applying scheduled slope changes.

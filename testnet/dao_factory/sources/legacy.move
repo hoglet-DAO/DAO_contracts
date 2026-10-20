@@ -283,7 +283,11 @@ module dao_factory::legacy {
             // accumulator can never distribute them). Redirect them to the
             // DAO treasury instead, where governance can recover them.
             let dest_store = primary_fungible_store::ensure_primary_store_exists(dao_address, fungible_asset::asset_metadata(&rebase_fa));
-            dispatchable_fungible_asset::deposit(dest_store, rebase_fa);
+            if (tax_router::has_tax_free_router(dao_address)) {
+                tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), dest_store, rebase_fa);
+            } else {
+                dispatchable_fungible_asset::deposit(dest_store, rebase_fa);
+            };
         };
     }
 
@@ -339,6 +343,41 @@ module dao_factory::legacy {
         scan::upsert_registry_snapshot(&mut history.snapshots, current_epoch, current_total, history.last_bias);
     }
 
+    fun sweep_orphaned_rebase_internal(
+        obj_addr: address,
+        ve_data: &mut VeToken,
+        registry: &mut VeTokenRegistry
+    ) {
+        let (orphaned, earned_u128) = math::compute_orphaned_rebase(
+            ve_data.locked_amount, registry.acc_rebase_per_share, ve_data.rebase_debt, fungible_asset::balance(registry.rebase_store)
+        );
+        if (orphaned > 0) {
+            let rebase_signer = object::generate_signer_for_extending(&registry.rebase_extend_ref);
+            let treasury_store = primary_fungible_store::ensure_primary_store_exists(ve_data.dao_address, registry.token_metadata);
+            transfer_tax_free(ve_data.dao_address, &rebase_signer, registry.rebase_store, treasury_store, orphaned);
+            event::emit(RebaseOrphanedSwept { dao_address: ve_data.dao_address, legacy: obj_addr, amount: orphaned });
+        };
+        ve_data.rebase_debt = earned_u128;
+    }
+
+    fun apply_lock_amount_increase(
+        ve_data: &mut VeToken,
+        registry: &mut VeTokenRegistry,
+        additional_amount: u64,
+        current_epoch: u64
+    ) acquires TotalLockedHistory {
+        let old_amount = ve_data.locked_amount;
+        let new_total = old_amount + additional_amount;
+        ve_data.locked_amount = new_total;
+        registry.total_locked = registry.total_locked + additional_amount;
+        
+        let history = borrow_global_mut<TotalLockedHistory>(ve_data.dao_address);
+        record_lock_delta(history, old_amount, ve_data.end_epoch, new_total, ve_data.end_epoch, current_epoch);
+        checkpoint_supply_internal(history, current_epoch);
+        scan::upsert_registry_snapshot(&mut history.snapshots, current_epoch, registry.total_locked, history.last_bias);
+        upsert_snapshot(ve_data);
+    }
+
     fun compound_rebase_internal(
         owner: &signer,
         obj_addr: address,
@@ -356,53 +395,25 @@ module dao_factory::legacy {
         // as a liquid savings account that steals rebase from active lockers.
         let current_epoch = pilgrim::now();
         if (ve_data.end_epoch <= current_epoch) {
-            let earned_u128 = math::calculate_rebase_debt(ve_data.locked_amount, registry.acc_rebase_per_share);
-            let orphaned_u128 = if (earned_u128 > ve_data.rebase_debt) { earned_u128 - ve_data.rebase_debt } else { 0 };
-            let orphaned = (orphaned_u128 as u64);
-
-            // FIX (audit M-05 + M-08): Expired locks cannot compound rebase. Instead of permanently trapping
-            // their allocated rebase in rebase_store, sweep the orphaned tokens to the DAO treasury.
-            // transfer_tax_free handles the fallback for DAOs without a tax-free router.
-            if (orphaned > 0) {
-                let rebase_signer = object::generate_signer_for_extending(&registry.rebase_extend_ref);
-                let treasury_store = primary_fungible_store::ensure_primary_store_exists(ve_data.dao_address, registry.token_metadata);
-                transfer_tax_free(ve_data.dao_address, &rebase_signer, registry.rebase_store, treasury_store, orphaned);
-                event::emit(RebaseOrphanedSwept { dao_address: ve_data.dao_address, legacy: obj_addr, amount: orphaned });
-            };
-
-            ve_data.rebase_debt = earned_u128;
+            sweep_orphaned_rebase_internal(obj_addr, ve_data, registry);
             harvest::checkpoint(ve_data.dao_address, obj_addr, ve_data.locked_amount);
             return
         };
 
-        let earned_u128 = math::calculate_rebase_debt(ve_data.locked_amount, registry.acc_rebase_per_share);
-        let pending_u128 = if (earned_u128 > ve_data.rebase_debt) { earned_u128 - ve_data.rebase_debt } else { 0 };
-        let pending = (pending_u128 as u64);
+        let (pending, earned_u128) = math::compute_pending_rebase(
+            ve_data.locked_amount, registry.acc_rebase_per_share, ve_data.rebase_debt, fungible_asset::balance(registry.rebase_store)
+        );
 
         if (pending > 0) {
-            // INVARIANT (audit10 C3): for plain-FA DAOs acc_rebase_per_share
-            // is hard 0 (both injectors are gated), so pending is always 0
-            // here and rebase_store is never touched without the cap.
-            // FIX (audit9 H-2): the rebase object owns rebase_store sign
-            // with it so tax_router's ownership check passes.
-            // FIX (audit C-01): Route compounded rebase from rebase_store to central escrow_store
             let rebase_signer = object::generate_signer_for_extending(&registry.rebase_extend_ref);
             transfer_tax_free(ve_data.dao_address, &rebase_signer, registry.rebase_store, registry.escrow_store, pending);
 
-            let old_amount = ve_data.locked_amount;
-            let new_amount = old_amount + pending;
-            ve_data.locked_amount = new_amount;
-            registry.total_locked = registry.total_locked + pending;
-
-            record_lock_delta(borrow_global_mut<TotalLockedHistory>(ve_data.dao_address), old_amount, ve_data.end_epoch, new_amount, ve_data.end_epoch, current_epoch);
-            update_total_locked_history(ve_data.dao_address, registry.total_locked);
-
-            upsert_snapshot(ve_data);
+            apply_lock_amount_increase(ve_data, registry, pending, current_epoch);
 
             event::emit(RebaseCompounded { legacy: obj_addr, amount: pending });
         };
 
-        ve_data.rebase_debt = math::calculate_rebase_debt(ve_data.locked_amount, registry.acc_rebase_per_share);
+        ve_data.rebase_debt = earned_u128;
 
         // Checkpoint harvest rewards AFTER changing locked_amount
         harvest::checkpoint(ve_data.dao_address, obj_addr, ve_data.locked_amount);
@@ -414,12 +425,7 @@ module dao_factory::legacy {
         format::format_ve_nft_uri(registry.base_uri, obj_addr)
     }
 
-    fun update_svg_uri(obj_addr: address, ve_data: &VeToken) acquires VeTokenRefs, VeTokenRegistry {
-        let refs = borrow_global<VeTokenRefs>(obj_addr);
-        let registry = borrow_global<VeTokenRegistry>(ve_data.dao_address);
-        let new_uri = get_or_generate_uri(obj_addr, registry);
-        token::set_uri(&refs.mutator_ref, new_uri);
-    }
+
 
 
 
@@ -447,16 +453,14 @@ module dao_factory::legacy {
         (owner_addr, dao_address)
     }
 
-    public entry fun compound(caller: &signer, legacy_addr: address) acquires VeToken, VeTokenRegistry, VeTokenRefs, TotalLockedHistory {
+    public entry fun compound(caller: &signer, legacy_addr: address) acquires VeToken, VeTokenRegistry, TotalLockedHistory {
         // FIX (audit10 #12): compound extracts harvest rewards + rebase, so
         // it must enforce the blacklist exactly like claim_rewards
         // (withdraw/merge stay unguarded on purpose: exiting users recover
         // their principal + accrued).
         let (owner_addr, dao_address) = prepare_and_compound(caller, legacy_addr);
         assert_not_blacklisted(dao_address, owner_addr);
-        let ve_data = borrow_global_mut<VeToken>(legacy_addr);
         
-        update_svg_uri(legacy_addr, ve_data);
     }
 
     // Sweeps orphaned rebase from an expired lock into the DAO treasury.
@@ -468,18 +472,7 @@ module dao_factory::legacy {
         assert!(ve_data.end_epoch <= current_epoch, error::invalid_state(E_STILL_LOCKED));
 
         let registry = borrow_global_mut<VeTokenRegistry>(ve_data.dao_address);
-        let earned_u128 = math::calculate_rebase_debt(ve_data.locked_amount, registry.acc_rebase_per_share);
-        let orphaned_u128 = if (earned_u128 > ve_data.rebase_debt) { earned_u128 - ve_data.rebase_debt } else { 0 };
-        let orphaned = (orphaned_u128 as u64);
-
-        if (orphaned > 0 && tax_router::has_tax_free_router(ve_data.dao_address)) {
-            let rebase_signer = object::generate_signer_for_extending(&registry.rebase_extend_ref);
-            let treasury_store = primary_fungible_store::ensure_primary_store_exists(ve_data.dao_address, registry.token_metadata);
-            transfer_tax_free(ve_data.dao_address, &rebase_signer, registry.rebase_store, treasury_store, orphaned);
-            event::emit(RebaseOrphanedSwept { dao_address: ve_data.dao_address, legacy: legacy_addr, amount: orphaned });
-        };
-
-        ve_data.rebase_debt = earned_u128;
+        sweep_orphaned_rebase_internal(legacy_addr, ve_data, registry);
     }
 
     public fun create_lock(
@@ -568,27 +561,20 @@ module dao_factory::legacy {
         owner: &signer,
         legacy_addr: address,
         additional_epochs: u64,
-    ) acquires VeToken, VeTokenRegistry, VeTokenRefs, TotalLockedHistory {
+    ) acquires VeToken, VeTokenRegistry, TotalLockedHistory {
         assert!(additional_epochs >= 1, error::invalid_argument(E_INVALID_EXTEND));
         // FIX (audit10 #12): extend extracts pending rewards (via compound)
         // before extending, so it enforces the blacklist like claim_rewards.
-        let (owner_addr, legacy_obj) = verify_owner_and_get_legacy(owner, legacy_addr);
-        assert_not_blacklisted(get_dao_address(legacy_obj), owner_addr);
-        let (_, dao_address) = prepare_and_compound(owner, legacy_addr);
+        let (owner_addr, dao_address) = prepare_and_compound(owner, legacy_addr);
+        assert_not_blacklisted(dao_address, owner_addr);
         sentinel::assert_not_paused(dao_address);
 
         let ve_data = borrow_global_mut<VeToken>(legacy_addr);
         let current_epoch = pilgrim::now();
-        
         let old_end_epoch = ve_data.end_epoch;
-        let new_end_epoch = if (old_end_epoch > current_epoch) {
-            old_end_epoch + additional_epochs
-        } else {
-            current_epoch + additional_epochs
-        };
-        assert!(new_end_epoch <= current_epoch + MAX_LOCK_EPOCHS, error::invalid_state(E_LOCK_TOO_LONG));
-        assert!(new_end_epoch >= current_epoch + MIN_LOCK_EPOCHS, error::invalid_argument(E_LOCK_TOO_SHORT));
-
+        let new_end_epoch = math::calculate_extend_lock_epoch(
+            old_end_epoch, current_epoch, additional_epochs, MIN_LOCK_EPOCHS, MAX_LOCK_EPOCHS, E_LOCK_TOO_SHORT, E_LOCK_TOO_LONG
+        );
         ve_data.end_epoch = new_end_epoch;
 
         record_lock_delta(borrow_global_mut<TotalLockedHistory>(dao_address), ve_data.locked_amount, old_end_epoch, ve_data.locked_amount, new_end_epoch, current_epoch);
@@ -597,7 +583,6 @@ module dao_factory::legacy {
         upsert_snapshot(ve_data);
 
         // Update SVG to reflect the new lock time
-        update_svg_uri(legacy_addr, ve_data);
 
         event::emit(LockExtended { owner: owner_addr, legacy: legacy_addr, old_end_epoch, new_end_epoch });
     }
@@ -606,7 +591,7 @@ module dao_factory::legacy {
         owner: &signer,
         legacy_addr: address,
         additional_amount: u64,
-    ) acquires VeToken, VeTokenRegistry, VeTokenRefs, TotalLockedHistory {
+    ) acquires VeToken, VeTokenRegistry, TotalLockedHistory {
         assert!(additional_amount > 0, error::invalid_argument(E_ZERO_AMOUNT));
         let (owner_addr, dao_address) = prepare_and_compound(owner, legacy_addr);
         sentinel::assert_not_paused(dao_address);
@@ -624,23 +609,16 @@ module dao_factory::legacy {
         // FIX (audit C-01): Deposit into central escrow_store
         transfer_tax_free(ve_data.dao_address, owner, user_store, registry.escrow_store, additional_amount);
 
-        let old_amount = ve_data.locked_amount;
-        let new_total = old_amount + additional_amount;
-        ve_data.locked_amount = new_total;
-        registry.total_locked = registry.total_locked + additional_amount;
-        record_lock_delta(borrow_global_mut<TotalLockedHistory>(ve_data.dao_address), old_amount, ve_data.end_epoch, new_total, ve_data.end_epoch, current_epoch);
-        update_total_locked_history(ve_data.dao_address, registry.total_locked);
+        apply_lock_amount_increase(ve_data, registry, additional_amount, current_epoch);
 
-        ve_data.rebase_debt = math::calculate_rebase_debt(new_total, registry.acc_rebase_per_share);
+        ve_data.rebase_debt = math::calculate_rebase_debt(ve_data.locked_amount, registry.acc_rebase_per_share);
 
         // Checkpoint for rewards (Must be called AFTER updating amount)
-        harvest::checkpoint(ve_data.dao_address, legacy_addr, new_total);
-
-        upsert_snapshot(ve_data);
+        harvest::checkpoint(ve_data.dao_address, legacy_addr, ve_data.locked_amount);
 
         // Update SVG to reflect the new amount
-        update_svg_uri(legacy_addr, ve_data);
 
+        let new_total = ve_data.locked_amount;
         event::emit(AmountIncreased { owner: owner_addr, legacy: legacy_addr, added_amount: additional_amount, new_total });
     }
 
@@ -708,13 +686,17 @@ module dao_factory::legacy {
         {
             let from_ve_data = borrow_global<VeToken>(from_legacy_addr);
             let into_ve_data = borrow_global<VeToken>(into_legacy_addr);
-            assert!(from_ve_data.dao_address == into_ve_data.dao_address, error::invalid_argument(E_INVALID_OBJECT));
-            let current_epoch = pilgrim::now();
-            assert!(from_ve_data.end_epoch > current_epoch, error::invalid_state(E_LOCK_EXPIRED));
-            
-            let check_epoch = if (current_epoch > 0) { current_epoch - 1 } else { 0 };
-            assert!(from_ve_data.last_voted_epoch < check_epoch, error::invalid_state(E_VOTED_RECENTLY));
-            assert!(into_ve_data.last_voted_epoch < check_epoch, error::invalid_state(E_VOTED_RECENTLY));
+            math::validate_merge_preconditions(
+                from_ve_data.dao_address,
+                into_ve_data.dao_address,
+                from_ve_data.end_epoch,
+                from_ve_data.last_voted_epoch,
+                into_ve_data.last_voted_epoch,
+                pilgrim::now(),
+                E_INVALID_OBJECT,
+                E_LOCK_EXPIRED,
+                E_VOTED_RECENTLY
+            );
         };
 
         // Sentinel: merge is pausable
@@ -743,19 +725,9 @@ module dao_factory::legacy {
             new_total = old_into_amount + from_amount;
             into_ve_data.locked_amount = new_total;
             
-            new_end_epoch = if (from_end_epoch > old_into_end) {
-                from_end_epoch
-            } else {
-                old_into_end
-            };
-            into_ve_data.end_epoch = new_end_epoch;
-
-            // Enforce MAX_LOCK_EPOCHS cap
             let current_epoch = pilgrim::now();
-            if (new_end_epoch > current_epoch + MAX_LOCK_EPOCHS) {
-                new_end_epoch = current_epoch + MAX_LOCK_EPOCHS;
-                into_ve_data.end_epoch = new_end_epoch;
-            };
+            new_end_epoch = math::calculate_merge_lock_epoch(from_end_epoch, old_into_end, current_epoch, MAX_LOCK_EPOCHS);
+            into_ve_data.end_epoch = new_end_epoch;
 
             let history = borrow_global_mut<TotalLockedHistory>(dao_address);
             record_remove_lock(history, from_amount, from_end_epoch, current_epoch);
@@ -775,7 +747,6 @@ module dao_factory::legacy {
         harvest::checkpoint(dao_address, into_legacy_addr, new_total);
 
         // Update SVG
-        update_svg_uri(into_legacy_addr, borrow_global<VeToken>(into_legacy_addr));
 
         event::emit(LockMerged { owner: owner_addr, from_legacy: from_legacy_addr, into_legacy: into_legacy_addr, amount_merged: from_amount, new_total, new_end_epoch });
     }
@@ -791,7 +762,7 @@ module dao_factory::legacy {
         owner: &signer,
         legacy_addr: address,
         delegate_addr: address,
-    ) acquires VeToken, VeTokenRefs, VeTokenRegistry {
+    ) acquires VeToken, VeTokenRegistry {
         let (owner_addr, _) = verify_owner_and_get_legacy(owner, legacy_addr);
         assert!(delegate_addr != owner_addr, error::invalid_argument(E_SELF_DELEGATE));
 
@@ -811,14 +782,13 @@ module dao_factory::legacy {
         emit_delegate_changed(obj_addr, owner_addr, old_delegate, option::some(delegate_addr));
 
         // Update SVG to reflect DELEGATED status
-        update_svg_uri(obj_addr, ve_data);
     }
 
     // Revokes the vote delegation. The owner regains control of their voting power.
     public entry fun revoke_delegation(
         owner: &signer,
         legacy_addr: address,
-    ) acquires VeToken, VeTokenRefs, VeTokenRegistry {
+    ) acquires VeToken {
         let (owner_addr, _) = verify_owner_and_get_legacy(owner, legacy_addr);
 
         let obj_addr = legacy_addr;
@@ -831,7 +801,6 @@ module dao_factory::legacy {
         emit_delegate_changed(obj_addr, owner_addr, old_delegate, option::none());
 
         // Update SVG to reflect SELF_VOTING status
-        update_svg_uri(obj_addr, ve_data);
     }
 
     // Checks if an address is the current delegate of a veToken.
@@ -848,7 +817,9 @@ module dao_factory::legacy {
 
     public(friend) fun set_last_voted_epoch(ve_token_obj: Object<VeToken>, epoch: u64) acquires VeToken {
         let ve_token = borrow_global_mut<VeToken>(object::object_address(&ve_token_obj));
-        ve_token.last_voted_epoch = epoch;
+        if (epoch > ve_token.last_voted_epoch) {
+            ve_token.last_voted_epoch = epoch;
+        };
     }
 
     // Views 
@@ -1043,16 +1014,7 @@ module dao_factory::legacy {
         owner: &signer,
         legacy_addr: address,
     ) acquires VeToken, VeTokenRegistry, TotalLockedHistory {
-        let (owner_addr, _) = verify_owner_and_get_legacy(owner, legacy_addr);
-        
-        {
-            let ve_data = borrow_global_mut<VeToken>(legacy_addr);
-            // FIX (audit10 M3): blacklisted accounts must not extract
-            // harvest rewards or rebase.
-            assert_not_blacklisted(ve_data.dao_address, owner_addr);
-            let registry = borrow_global_mut<VeTokenRegistry>(ve_data.dao_address);
-            compound_rebase_internal(owner, legacy_addr, ve_data, registry);
-        };
+        compound(owner, legacy_addr);
     }
 
     #[view]

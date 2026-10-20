@@ -238,7 +238,7 @@ module dao_boost::boost_registry {
 
                 let coll_bps = table::u64_or_zero(&registry.collections, collection_addr);
 
-                if (coll_bps == 0 || vector::contains(&counted_collections, &collection_addr)) {
+                if (coll_bps == 0 || vector::contains(&counted_collections, &collection_addr) || total_bps >= HARD_MAX_BOOST_CAP_BPS) {
                     vector::push_back(&mut rejected_nfts, nft_addr);
                 } else {
                     vector::push_back(&mut counted_collections, collection_addr);

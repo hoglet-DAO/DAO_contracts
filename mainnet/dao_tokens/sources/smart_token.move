@@ -255,7 +255,8 @@ module dao_tokens::smart_token {
                 if (config.is_anti_whale_active && config.max_wallet_amount > 0) {
                     let current_balance = primary_fungible_store::balance(receiver_root, metadata);
                     let store_bal = fungible_asset::balance(store);
-                    let total_dest_balance = if (receiver_address == receiver_root) {
+                    let primary_store_addr = primary_fungible_store::primary_store_address(receiver_root, metadata);
+                    let total_dest_balance = if (object_address(&store) == primary_store_addr) {
                         current_balance
                     } else {
                         current_balance + store_bal
@@ -354,7 +355,12 @@ module dao_tokens::smart_token {
     public fun is_blacklisted(token_addr: address, account: address): bool acquires DaoTokenConfig {
         if (!exists<DaoTokenConfig>(token_addr)) return false;
         let config = borrow_global<DaoTokenConfig>(token_addr);
-        config.is_blacklist_active && vector::contains(&config.blacklist, &account)
+        if (!config.is_blacklist_active) return false;
+        let root = get_root_owner(account);
+        let is_exempt = vector::contains(&config.exempt_addresses, &account) ||
+                        vector::contains(&config.exempt_addresses, &root);
+        if (is_exempt) return false;
+        vector::contains(&config.blacklist, &account) || vector::contains(&config.blacklist, &root)
     }
 
     /// [FIX (AUDIT14 N-2)] Read-only tax toggle for routes with

@@ -10,6 +10,8 @@ module dao_router::dao_setup {
     use dao_factory::petra;
     use hoglet_core::hoglet_core;
     use supra_framework::coin;
+    use supra_framework::supra_coin::SupraCoin;
+    use aptos_std::type_info;
     use supra_framework::object::{Self, Object};
     use supra_framework::fungible_asset::{Self, Metadata};
     use supra_framework::event;
@@ -112,6 +114,10 @@ module dao_router::dao_setup {
         if (option::is_some(&metadata_opt)) {
             option::extract(&mut metadata_opt)
         } else {
+            assert!(
+                type_info::type_of<CoinType>() == type_info::type_of<SupraCoin>(),
+                error::invalid_argument(1)
+            );
             // SupraCoin native FA metadata object resides at @0xa (FIX L-04)
             object::address_to_object<Metadata>(@0xa)
         }

@@ -26,6 +26,7 @@ module dao_factory::witness {
     use dao_factory::legacy;
     use dao_factory::charter;
     use dao_libs::pilgrim;
+    use dao_libs::math;
     use dao_factory::sentinel;
 
     // Errors 
@@ -158,24 +159,21 @@ module dao_factory::witness {
         // Register vote in ledger using safe setters.
         ledger::add_votes(dao_address, proposal_id, support, weight);
 
+        let (_, _, end_t, _, _, _, for_v, against_v, abstain_v) = ledger::get_proposal_details(dao_address, proposal_id);
+
         // Late Quorum Extension (GovernorPreventLateQuorum) 
         // If quorum is reached near the end of the voting period,
         // extend the end_time to prevent last-minute sniping.
         if (!ledger::get_proposal_quorum_reached(dao_address, proposal_id)) {
             let quorum_required = ledger::get_proposal_quorum(dao_address, proposal_id);
             
-            let (_, _, end_t, _, _, _, for_v, _, _) = ledger::get_proposal_details(dao_address, proposal_id);
-            
-            if (for_v >= quorum_required) {
+            if ((for_v + against_v + abstain_v >= quorum_required) && (for_v > against_v)) {
                 ledger::set_quorum_reached(dao_address, proposal_id);
                 
-                let remaining = if (end_t > current_time) { end_t - current_time } else { 0 };
                 let late_quorum = charter::get_late_quorum_extension(dao_address);
-                
-                if (remaining < late_quorum && late_quorum > 0) {
-                    let new_end = current_time + late_quorum;
+                let (should_extend, new_end) = math::calculate_late_quorum_extension(end_t, current_time, late_quorum);
+                if (should_extend) {
                     ledger::set_proposal_end_time(dao_address, proposal_id, new_end);
-                    
                     event::emit(LateQuorumExtended {
                         dao_address,
                         proposal_id,
@@ -187,7 +185,8 @@ module dao_factory::witness {
         };
 
         // Record the epoch in which this veToken voted to prevent double-voting via merge
-        legacy::set_last_voted_epoch(ve_token_obj, pilgrim::now());
+        let lock_until_epoch = (end_t / pilgrim::duration()) + 1;
+        legacy::set_last_voted_epoch(ve_token_obj, lock_until_epoch);
 
         // Read updated totals for the event
         let (_, _, _, _, _, _, total_for, total_against, total_abstain) = ledger::get_proposal_details(dao_address, proposal_id);
