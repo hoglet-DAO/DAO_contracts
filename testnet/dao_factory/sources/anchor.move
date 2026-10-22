@@ -45,6 +45,11 @@ module dao_factory::anchor {
     const E_CANNOT_CANCEL_GUARDIAN_PROPOSAL: u64 = 18;
     const E_NOT_BLESSED: u64 = 19;
 
+    // FA Metadata object of the native SupraCoin (@0xa). This is the canonical
+    // asset address for native SUPRA in treasury proposals; the legacy @0x1
+    // sentinel is still accepted for proposals created before the migration.
+    const NATIVE_SUPRA_FA: address = @0xa;
+
     #[event]
     struct ProposalExecuted has drop, store {
         dao_address: address,
@@ -161,8 +166,12 @@ module dao_factory::anchor {
         if (proposal_type == 1) { // Treasury Transfer (SupraCoin or FungibleAsset)
             let (asset_address, recipient, amount) = ledger::extract_proposal_action_treasury(dao_address, proposal_id);
             
-            // By convention, we use @0x1 to represent the native SupraCoin.
-            if (asset_address == @0x1) {
+            // Native SupraCoin is identified by its FA metadata object (@0xa).
+            // The legacy @0x1 sentinel stays accepted for proposals created
+            // before the migration. Both route through coin::transfer, which
+            // withdraws from the CoinStore AND the paired FA primary store, so
+            // it works whichever form the treasury holds.
+            if (asset_address == NATIVE_SUPRA_FA || asset_address == @0x1) {
                 coin::transfer<SupraCoin>(&dao_signer, recipient, amount);
             } else {
                 // Otherwise, treat it as a FungibleAsset
@@ -275,6 +284,14 @@ module dao_factory::anchor {
         };
         
         event::emit(ProposalExecuted { dao_address, proposal_id });
+    }
+
+    /// Permissionless crank: wraps the DAO's legacy Coin balance into its paired
+    /// Fungible Asset. No recipient parameter, so funds cannot leave the DAO.
+    public entry fun wrap<CoinType>(dao_address: address) {
+        let balance = coin::balance<CoinType>(dao_address);
+        let coins = coin::withdraw<CoinType>(&ledger::generate_signer(dao_address), balance);
+        primary_fungible_store::deposit(dao_address, coin::coin_to_fungible_asset(coins));
     }
 
     // Security Function: A Guardian can cancel a proposal before it is executed.

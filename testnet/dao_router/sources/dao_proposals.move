@@ -6,6 +6,8 @@ module dao_router::dao_proposals {
     use std::vector;
     use std::error;
     use supra_framework::object;
+    use supra_framework::coin;
+    use supra_framework::fungible_asset::Metadata;
     use aptos_token_objects::token;
     use dao_factory::herald;
     use dao_factory::charter;
@@ -23,6 +25,8 @@ module dao_router::dao_proposals {
     const E_NOT_AN_NFT: u64 = 17;
     const E_INVALID_TARGET: u64 = 18;
     const E_NOT_BLESSED: u64 = 19;
+    const E_INVALID_ASSET: u64 = 20;
+    const E_NO_PAIRED_FA: u64 = 21;
 
     public entry fun propose_treasury_transfer(
         proposer: &signer,
@@ -34,9 +38,37 @@ module dao_router::dao_proposals {
         recipient: address,
         amount: u64,
     ) {
+        // Native SUPRA is the FA metadata object @0xa (canonical form). The
+        // legacy @0x1 sentinel is normalized here so every NEW proposal stores
+        // @0xa, and any non-native asset must be a real FA metadata object.
+        let asset = if (asset_address == @0x1) { @0xa } else { asset_address };
+        assert!(object::object_exists<Metadata>(asset), error::invalid_argument(E_INVALID_ASSET));
+
         herald::propose_standard(
             proposer, legacy_addr, dao_address, title, description_hash, 1,
-            vector::empty(), recipient, amount, 0, 0, asset_address, @0x0, asset_address
+            vector::empty(), recipient, amount, 0, 0, asset, @0x0, asset
+        );
+    }
+
+    /// Type-safe treasury transfer for Coin-Legacy assets (including native
+    /// SUPRA): derives the paired FA Metadata address on-chain, so callers
+    /// cannot pass a coin type or an arbitrary wrapper FA.
+    public entry fun propose_treasury_transfer_coin<CoinType>(
+        proposer: &signer,
+        legacy_addr: address,
+        dao_address: address,
+        title: String,
+        description_hash: vector<u8>,
+        recipient: address,
+        amount: u64,
+    ) {
+        let meta_opt = coin::paired_metadata<CoinType>();
+        assert!(std::option::is_some(&meta_opt), error::invalid_argument(E_NO_PAIRED_FA));
+        let asset = object::object_address(&std::option::destroy_some(meta_opt));
+
+        herald::propose_standard(
+            proposer, legacy_addr, dao_address, title, description_hash, 1,
+            vector::empty(), recipient, amount, 0, 0, asset, @0x0, asset
         );
     }
 
