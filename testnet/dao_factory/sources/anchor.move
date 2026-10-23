@@ -1,7 +1,6 @@
 module dao_factory::anchor {
     friend dao_factory::seal;
     use std::signer;
-    use std::vector;
     use dao_tax_router::tax_router;
     use std::error;
     use supra_framework::timestamp;
@@ -81,14 +80,14 @@ module dao_factory::anchor {
         };
         let grace_period = charter::get_grace_period(dao_address);
         let quorum_required = ledger::get_proposal_quorum(dao_address, proposal_id);
-        let total_participation = for_votes + against_votes + abstain_votes;
+        let qualifying_votes = for_votes + abstain_votes;
         math::validate_proposal_queue(
             eta,
             canceled,
             end_time,
             grace_period,
             timestamp::now_seconds(),
-            total_participation,
+            qualifying_votes,
             quorum_required,
             for_votes,
             against_votes,
@@ -114,17 +113,6 @@ module dao_factory::anchor {
     // public entry point is `seal::resolve`, which checks both and
     // then delegates here. This closes the "call anchor::resolve directly to
     // bypass seal" attack (HOG-01).
-    fun is_valid_hash(h: &vector<u8>): bool {
-        let len = vector::length(h);
-        if (len != 32) return false;
-        let i = 0;
-        while (i < len) {
-            if (*vector::borrow(h, i) != 0) return true;
-            i = i + 1;
-        };
-        false
-    }
-
     public(friend) fun resolve(dao_address: address, proposal_id: u64): signer {
         // Type 9 hands the DAO's signer to ARBITRARY code. A guardian (who can
         // ONLY cancel, never execute) is required as a safety net: if a malicious
@@ -142,7 +130,7 @@ module dao_factory::anchor {
         assert!(proposal_type == 8, error::invalid_argument(E_INVALID_PROPOSAL_TYPE));
 
         let expected_hash = ledger::get_proposal_execution_hash(dao_address, proposal_id);
-        assert!(is_valid_hash(&expected_hash), error::invalid_argument(E_SCRIPT_HASH_MISMATCH));
+        assert!(math::is_valid_hash(&expected_hash), error::invalid_argument(E_SCRIPT_HASH_MISMATCH));
         assert!(
             transaction_context::get_script_hash() == expected_hash,
             error::invalid_argument(E_SCRIPT_HASH_MISMATCH)
@@ -367,7 +355,9 @@ module dao_factory::anchor {
         assert!(!canceled, error::invalid_state(E_ALREADY_CANCELED));
         assert!(!executed, error::invalid_state(E_ALREADY_EXECUTED));
 
-        let total_participation = for_v + against_v + abstain_v;
+        // Support-only turnout (for + abstain) drives both the quorum check and the
+        // dynamic rolling average, so opposition votes never qualify a proposal.
+        let qualifying_votes = for_v + abstain_v;
 
         // SECURITY FIX (VULN-03): Only record participation if the proposal
         // genuinely succeeded: it must win the vote AND reach quorum.
@@ -379,8 +369,8 @@ module dao_factory::anchor {
         // the regular dynamic quorum, this paved the way to drain the treasury
         // with minimal voting power.
         let quorum_required = ledger::get_proposal_quorum(dao_address, proposal_id);
-        if (for_v > against_v && total_participation >= quorum_required) {
-            ledger::record_participation(dao_address, proposal_id, total_participation);
+        if (for_v > against_v && qualifying_votes >= quorum_required) {
+            ledger::record_participation(dao_address, proposal_id, qualifying_votes);
         } else {
             // Mark it as finalized in the ledger without affecting the moving average quorum
             ledger::record_participation(dao_address, proposal_id, 0); // Assuming 0 skips the EMA calculation, or we need a specific function.
@@ -406,9 +396,9 @@ module dao_factory::anchor {
         let (_, _, _, eta, executed, canceled, for_votes, against_votes, abstain_votes) = ledger::get_proposal_details(dao_address, proposal_id);
         let grace_period = charter::get_grace_period(dao_address);
         let quorum_required = ledger::get_proposal_quorum(dao_address, proposal_id);
-        let total_participation = for_votes + against_votes + abstain_votes;
+        let qualifying_votes = for_votes + abstain_votes;
         math::validate_proposal_execution(
-            eta, grace_period, executed, canceled, total_participation, quorum_required, for_votes, against_votes, timestamp::now_seconds(),
+            eta, grace_period, executed, canceled, qualifying_votes, quorum_required, for_votes, against_votes, timestamp::now_seconds(),
             E_TIMELOCK_NOT_READY, E_PROPOSAL_EXPIRED, E_ALREADY_EXECUTED, E_ALREADY_CANCELED, E_PROPOSAL_NOT_SUCCEEDED, E_PROPOSAL_DEFEATED
         );
         

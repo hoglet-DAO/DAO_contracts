@@ -117,17 +117,13 @@ module dao_factory::restore {
         object::disable_ungated_transfer(&transfer_ref);
         
         let whitelisted = vector::empty<address>();
-        if (!vector::contains(&whitelisted, &governance_token_addr)) {
-            vector::push_back(&mut whitelisted, governance_token_addr);
-        };
+        table::push_unique(&mut whitelisted, governance_token_addr);
         
         let i = 0;
         let len = vector::length(&extra_whitelisted_tokens);
         while (i < len) {
             let token = *vector::borrow(&extra_whitelisted_tokens, i);
-            if (!vector::contains(&whitelisted, &token)) {
-                vector::push_back(&mut whitelisted, token);
-            };
+            table::push_unique(&mut whitelisted, token);
             i = i + 1;
         };
 
@@ -152,14 +148,10 @@ module dao_factory::restore {
         let registry = borrow_global_mut<BribeRegistry>(signer::address_of(dao_signer));
         let token_addr = object::object_address(&token_metadata);
         
-        let contains = vector::contains(&registry.whitelisted_tokens, &token_addr);
-        if (is_allowed && !contains) {
-            vector::push_back(&mut registry.whitelisted_tokens, token_addr);
-        } else if (!is_allowed && contains) {
-            let (found, index) = vector::index_of(&registry.whitelisted_tokens, &token_addr);
-            if (found) {
-                vector::remove(&mut registry.whitelisted_tokens, index);
-            };
+        if (is_allowed) {
+            table::push_unique(&mut registry.whitelisted_tokens, token_addr);
+        } else {
+            table::remove_if_present(&mut registry.whitelisted_tokens, token_addr);
         };
 
         event::emit(WhitelistUpdated {

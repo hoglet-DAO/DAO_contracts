@@ -17,15 +17,13 @@ module dao_factory::harvest {
     use supra_framework::event;
     use aptos_std::smart_table::{Self, SmartTable};
     use dao_libs::table;
+    use dao_libs::math;
     use dao_factory::ledger;
     use dao_tax_router::tax_router;
     use supra_framework::timestamp;
     use dfmm_framework::poel;
 
     // Constants 
-    // Precision factor to avoid truncation in division.
-    const PRECISION: u256 = 1_000_000_000_000;
-
     // Structs 
     // The DAO's reward vault.
     struct RewardVault has key {
@@ -88,8 +86,7 @@ module dao_factory::harvest {
         let amount = fungible_asset::amount(&reward);
 
         if (total_locked > 0 && amount > 0) {
-            let increment = (((amount as u256) * PRECISION / (total_locked as u256)) as u128);
-            vault.acc_reward_per_share = vault.acc_reward_per_share + increment;
+            vault.acc_reward_per_share = math::harvest_add_per_share(amount, total_locked, vault.acc_reward_per_share);
             // [FIX (AUDIT13 #1)] Same tax-free route as legacy::inject_rebase:
             // raw dispatch deposits charge buy_tax on the settled stream,
             // desyncing the accumulator from the vault store. Smart-token DAOs
@@ -133,7 +130,7 @@ module dao_factory::harvest {
         if (!exists<RewardVault>(dao_address)) return;
 
         let vault = borrow_global_mut<RewardVault>(dao_address);
-        let new_debt = (((new_locked as u256) * (vault.acc_reward_per_share as u256) / PRECISION) as u128);
+        let new_debt = math::harvest_debt(new_locked, vault.acc_reward_per_share);
         smart_table::upsert(&mut vault.user_debt, ve_token_addr, new_debt);
     }
 
@@ -149,10 +146,9 @@ module dao_factory::harvest {
 
         let debt: u128 = table::u128_or_zero(&vault.user_debt, ve_addr);
 
-        // Pending = (locked * acc_per_share / PRECISION) - debt
-        let earned_u128 = (((locked_amount as u256) * (vault.acc_reward_per_share as u256) / PRECISION) as u128);
-        let pending_u128 = if (earned_u128 > debt) { earned_u128 - debt } else { 0 };
-        let pending = (pending_u128 as u64);
+        // Pending = (locked * acc_per_share / PRECISION) - debt (shared helper).
+        let earned_u128 = math::harvest_debt(locked_amount, vault.acc_reward_per_share);
+        let pending = math::harvest_pending(locked_amount, vault.acc_reward_per_share, debt);
         if (pending == 0) return;
 
         // CRIT-05: Cap pending to physical vault balance so rounding deficits never block withdraw
@@ -200,8 +196,7 @@ module dao_factory::harvest {
 
         let debt: u128 = table::u128_or_zero(&vault.user_debt, ve_addr);
 
-        let earned_u128 = (((locked_amount as u256) * (vault.acc_reward_per_share as u256) / PRECISION) as u128);
-        if (earned_u128 > debt) { ((earned_u128 - debt) as u64) } else { 0 }
+        math::harvest_pending(locked_amount, vault.acc_reward_per_share, debt)
     }
 
     public entry fun harvest_poel_rewards(dao_address: address) {

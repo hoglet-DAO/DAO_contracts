@@ -167,7 +167,9 @@ module dao_factory::witness {
         if (!ledger::get_proposal_quorum_reached(dao_address, proposal_id)) {
             let quorum_required = ledger::get_proposal_quorum(dao_address, proposal_id);
             
-            if ((for_v + against_v + abstain_v >= quorum_required) && (for_v > against_v)) {
+            // Quorum is measured in SUPPORT only: for + abstain count toward the
+        // threshold, against does not (OpenZeppelin Governor semantics).
+        if ((for_v + abstain_v >= quorum_required) && (for_v > against_v)) {
                 ledger::set_quorum_reached(dao_address, proposal_id);
                 
                 let late_quorum = charter::get_late_quorum_extension(dao_address);

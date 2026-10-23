@@ -7,6 +7,8 @@ module dao_libs::math {
     use supra_framework::object;
 
     const PRECISION: u256 = 1_000_000_000_000_000_000;
+    // Harvest accumulator scale (1e12), deliberately different from PRECISION.
+    const HARVEST_PRECISION: u256 = 1_000_000_000_000;
 
     // Calculates the rebase debt given a locked amount and the accumulated rebase per share.
     public fun calculate_rebase_debt(amount: u64, acc_rebase: u128): u128 {
@@ -43,6 +45,28 @@ module dao_libs::math {
     // count against the core package size (audit10 UI review).
     public fun rebase_pending(locked: u64, acc: u128, debt: u128): u64 {
         let earned = calculate_rebase_debt(locked, acc);
+        if (earned > debt) { ((earned - debt) as u64) } else { 0 }
+    }
+
+
+    // Harvest reward accumulator uses its own 1e12 scale (independent from the
+    // 1e18 rebase accumulator in legacy). These helpers preserve that exact
+    // scale so moving the math here is byte-identical in behavior.
+
+    // acc' = acc + amount * 1e12 / total_locked. Callers guard total_locked > 0
+    // and amount > 0, matching the inline code this replaces.
+    public fun harvest_add_per_share(amount: u64, total_locked: u64, current_acc: u128): u128 {
+        current_acc + (((amount as u256) * HARVEST_PRECISION / (total_locked as u256)) as u128)
+    }
+
+    // debt = locked * acc / 1e12.
+    public fun harvest_debt(locked: u64, acc: u128): u128 {
+        (((locked as u256) * (acc as u256) / HARVEST_PRECISION) as u128)
+    }
+
+    // Pending = earned - debt, floored at 0 (1e12 scale).
+    public fun harvest_pending(locked: u64, acc: u128, debt: u128): u64 {
+        let earned = harvest_debt(locked, acc);
         if (earned > debt) { ((earned - debt) as u64) } else { 0 }
     }
 
@@ -298,7 +322,7 @@ module dao_libs::math {
         grace_period: u64,
         executed: bool,
         canceled: bool,
-        total_participation: u64,
+        qualifying_votes: u64,
         quorum_required: u64,
         for_votes: u64,
         against_votes: u64,
@@ -314,7 +338,7 @@ module dao_libs::math {
         assert!(now <= eta + grace_period, error::invalid_state(err_expired));
         assert!(!executed, error::invalid_state(err_executed));
         assert!(!canceled, error::invalid_state(err_canceled));
-        assert!(total_participation >= quorum_required, error::invalid_state(err_not_succeeded));
+        assert!(qualifying_votes >= quorum_required, error::invalid_state(err_not_succeeded));
         assert!(for_votes > against_votes, error::invalid_state(err_defeated));
     }
 
@@ -608,12 +632,24 @@ module dao_libs::math {
         if (eta != 0) { return 5u8 };
         if (current_time < start_time) { return 0u8 };
         if (current_time <= end_time) { return 1u8 };
-        let total_participation = for_votes + against_votes + abstain_votes;
-        if (total_participation >= quorum_required && for_votes > against_votes) {
+        let qualifying_votes = for_votes + abstain_votes;
+        if (qualifying_votes >= quorum_required && for_votes > against_votes) {
             4u8
         } else {
             3u8
         }
+    }
+
+    // Returns true when h is a 32-byte commitment with at least one non-zero byte.
+    public fun is_valid_hash(h: &vector<u8>): bool {
+        let len = vector::length(h);
+        if (len != 32) return false;
+        let i = 0;
+        while (i < len) {
+            if (*vector::borrow(h, i) != 0) return true;
+            i = i + 1;
+        };
+        false
     }
 
     // Validates script proposal execution hash and argument commitments
@@ -664,7 +700,7 @@ module dao_libs::math {
         end_time: u64,
         grace_period: u64,
         now: u64,
-        total_participation: u64,
+        qualifying_votes: u64,
         quorum_required: u64,
         for_votes: u64,
         against_votes: u64,
@@ -676,7 +712,7 @@ module dao_libs::math {
         assert!(now <= end_time + grace_period, error::invalid_state(e_expired));
         assert!(eta == 0, error::invalid_state(e_already_queued));
         assert!(!canceled, error::invalid_state(e_already_canceled));
-        assert!(total_participation >= quorum_required && for_votes > against_votes, error::invalid_state(e_not_succeeded));
+        assert!(qualifying_votes >= quorum_required && for_votes > against_votes, error::invalid_state(e_not_succeeded));
     }
 
 }

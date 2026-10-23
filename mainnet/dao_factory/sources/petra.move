@@ -32,6 +32,7 @@ module dao_factory::petra {
     use dao_factory::sentinel;
     use dao_boost::boost_registry;
     use dao_libs::math;
+    use dao_libs::table;
     use dao_tax_router::tax_router;
     use dao_tokens::smart_token;
 
@@ -284,18 +285,13 @@ module dao_factory::petra {
     public entry fun add_default_bribe_token(admin: &signer, token_addr: address) acquires FactoryConfig {
         assert_admin(admin);
         let config = borrow_global_mut<FactoryConfig>(@dao_factory);
-        if (!vector::contains(&config.default_bribe_tokens, &token_addr)) {
-            vector::push_back(&mut config.default_bribe_tokens, token_addr);
-        }
+        table::push_unique(&mut config.default_bribe_tokens, token_addr);
     }
 
     public entry fun remove_default_bribe_token(admin: &signer, token_addr: address) acquires FactoryConfig {
         assert_admin(admin);
         let config = borrow_global_mut<FactoryConfig>(@dao_factory);
-        let (found, index) = vector::index_of(&config.default_bribe_tokens, &token_addr);
-        if (found) {
-            vector::remove(&mut config.default_bribe_tokens, index);
-        }
+        table::remove_if_present(&mut config.default_bribe_tokens, token_addr);
     }
 
     // SECURITY FIX (VULN-05): All default setters now enforce the same bounds
