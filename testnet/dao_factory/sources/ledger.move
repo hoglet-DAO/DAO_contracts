@@ -307,6 +307,45 @@ module dao_factory::ledger {
         (proposal.action_amount, proposal.action_config_value == 1)
     }
 
+    #[view]
+    public fun get_proposal_title(dao_address: address, proposal_id: u64): String acquires DaoState {
+        let state = borrow_global<DaoState>(dao_address);
+        *&get_proposal_safe(state, proposal_id).title
+    }
+
+    #[view]
+    public fun get_proposal_description_hash(dao_address: address, proposal_id: u64): vector<u8> acquires DaoState {
+        let state = borrow_global<DaoState>(dao_address);
+        *&get_proposal_safe(state, proposal_id).description_hash
+    }
+
+    #[view]
+    public fun get_proposal_action_treasury_full(dao_address: address, proposal_id: u64): (address, address, u64) acquires DaoState {
+        let state = borrow_global<DaoState>(dao_address);
+        let proposal = get_proposal_safe(state, proposal_id);
+        (proposal.action_target_address, proposal.action_recipient, proposal.action_amount)
+    }
+
+    #[view]
+    public fun get_proposal_action_nft(dao_address: address, proposal_id: u64): (address, address) acquires DaoState {
+        let state = borrow_global<DaoState>(dao_address);
+        let proposal = get_proposal_safe(state, proposal_id);
+        (proposal.action_target_address, proposal.action_recipient)
+    }
+
+    #[view]
+    public fun get_proposal_action_guardian(dao_address: address, proposal_id: u64): address acquires DaoState {
+        let state = borrow_global<DaoState>(dao_address);
+        get_proposal_safe(state, proposal_id).action_target_address
+    }
+
+    #[view]
+    public fun get_proposal_action_raw(dao_address: address, proposal_id: u64): (u8, address, address, u64, u8, u64) acquires DaoState {
+        let state = borrow_global<DaoState>(dao_address);
+        let p = get_proposal_safe(state, proposal_id);
+        (p.proposal_type, p.action_target_address, p.action_recipient, p.action_amount, p.action_config_key, p.action_config_value)
+    }
+
     // Dynamic Quorum (Rolling Average) 
 
     // Records the participation (total votes cast) of a finalized proposal.

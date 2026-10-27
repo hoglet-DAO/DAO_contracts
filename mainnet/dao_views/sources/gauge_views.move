@@ -7,7 +7,10 @@
 module dao_views::gauge_views {
     use std::vector;
     use dao_factory::foundry;
+    use dao_factory::restore;
     use dao_factory::zeal;
+    use dao_libs::math;
+    use dao_libs::pilgrim;
 
     // Returns the id of the gauge whose staking token matches, or
     // GAUGE_NOT_FOUND (u64::MAX, same sentinel as zeal).
@@ -67,4 +70,22 @@ module dao_views::gauge_views {
         };
         (balances, earned)
     }
+
+    // Calcula el monto exacto de bribe reclamable por un veNFT en una época pasada (0 si ya reclamó o si la época sigue abierta)
+    #[view]
+    public fun get_claimable_bribe(
+        dao_address: address,
+        pilgrim_epoch: u64,
+        gauge_id: u64,
+        token_addr: address,
+        ve_token_addr: address
+    ): u64 {
+        if (pilgrim_epoch >= pilgrim::now()) return 0;
+        if (restore::has_claimed_bribe(dao_address, pilgrim_epoch, gauge_id, token_addr, ve_token_addr)) return 0;
+        let total_bribe = restore::get_total_bribes_for(dao_address, pilgrim_epoch, gauge_id, token_addr);
+        let user_power = zeal::get_user_vote_power(dao_address, pilgrim_epoch, ve_token_addr, gauge_id);
+        let total_power = zeal::get_gauge_total_votes(dao_address, pilgrim_epoch, gauge_id);
+        math::compute_bribe_claim_share(total_bribe, user_power, total_power)
+    }
 }
+
