@@ -249,16 +249,7 @@ module dao_factory::charter {
     }
 
     public(friend) fun update_guardian(dao_signer: &signer, new_guardian: Option<address>) acquires DaoConfig {
-        let dao_address = std::signer::address_of(dao_signer);
-        let config = borrow_global_mut<DaoConfig>(dao_address);
-        let old_guardian = config.guardian;
-        config.guardian = new_guardian;
-
-        event::emit(GuardianUpdated {
-            dao_address,
-            old_guardian,
-            new_guardian,
-        });
+        update_guardian_by_factory(std::signer::address_of(dao_signer), new_guardian);
     }
 
     // Factory: Allows the Factory Admin to reassign the curator if compromised BEFORE blessing

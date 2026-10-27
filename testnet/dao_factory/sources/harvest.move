@@ -85,32 +85,13 @@ module dao_factory::harvest {
         let vault = borrow_global_mut<RewardVault>(dao_address);
         let amount = fungible_asset::amount(&reward);
 
-        if (total_locked > 0 && amount > 0) {
+        let dest_store = if (total_locked > 0 && amount > 0) {
             vault.acc_reward_per_share = math::harvest_add_per_share(amount, total_locked, vault.acc_reward_per_share);
-            // [FIX (AUDIT13 #1)] Same tax-free route as legacy::inject_rebase:
-            // raw dispatch deposits charge buy_tax on the settled stream,
-            // desyncing the accumulator from the vault store. Smart-token DAOs
-            // route via the cap (DAO master signer = whitelisted router,
-            // audit13 R-1); plain-FA DAOs have no TaxFreeRouter resource and
-            // keep the plain deposit (no hooks exist for them).
-            if (tax_router::has_tax_free_router(dao_address)) {
-                tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), vault.store, reward);
-            } else {
-                dispatchable_fungible_asset::deposit(vault.store, reward);
-            };
+            vault.store
         } else {
-            // SECURITY FIX (VULN-06): mirror of legacy::inject_rebase. When no
-            // one is locking, rewards deposited into the vault would be
-            // stranded forever (the accumulator can never distribute them).
-            // Redirect them to the DAO treasury instead, where governance
-            // can recover them.
-            let dest_store = primary_fungible_store::ensure_primary_store_exists(dao_address, fungible_asset::asset_metadata(&reward));
-            if (tax_router::has_tax_free_router(dao_address)) {
-                tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), dest_store, reward);
-            } else {
-                dispatchable_fungible_asset::deposit(dest_store, reward);
-            };
+            primary_fungible_store::ensure_primary_store_exists(dao_address, fungible_asset::asset_metadata(&reward))
         };
+        tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), dest_store, reward);
 
         event::emit(RewardsInjected {
             dao_address,

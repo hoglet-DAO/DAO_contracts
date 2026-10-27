@@ -239,10 +239,5 @@ module dao_factory::jubilee {
         }
     }
 
-    #[view]
-    public fun get_minter_config(dao_address: address): (u64, u64, u64, u64, u64) acquires MinterConfig {
-        if (!exists<MinterConfig>(dao_address)) return (0, 0, 0, 0, 0);
-        let c = borrow_global<MinterConfig>(dao_address);
-        (c.weekly_emission, c.decay_bps, c.tail_emission, c.gauge_split_bps, c.last_epoch)
-    }
+
 }

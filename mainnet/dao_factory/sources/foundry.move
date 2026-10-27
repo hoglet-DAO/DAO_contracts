@@ -425,11 +425,7 @@ module dao_factory::foundry {
         let gauge_ref = borrow_global<Gauge>(gauge_addr);
         let dao_address = gauge_ref.dao_address;
         let bal_before = primary_fungible_store::balance(gauge_addr, reward_token);
-        if (tax_router::has_tax_free_router(dao_address)) {
-            tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), gauge_dest, fa);
-        } else {
-            dispatchable_fungible_asset::deposit(gauge_dest, fa);
-        };
+        tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), gauge_dest, fa);
         let bal_after = primary_fungible_store::balance(gauge_addr, reward_token);
         let actual_amount = ((bal_after - bal_before) as u128);
         if (actual_amount == 0) {

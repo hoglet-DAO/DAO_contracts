@@ -181,33 +181,27 @@ module dao_factory::legacy {
 
     // Aesthetic Initialization 
 
+    fun create_guarded_subobject(dao_signer: &signer): (object::ConstructorRef, ExtendRef) {
+        let constructor_ref = object::create_object(signer::address_of(dao_signer));
+        let transfer_ref = object::generate_transfer_ref(&constructor_ref);
+        object::disable_ungated_transfer(&transfer_ref);
+        let extend_ref = object::generate_extend_ref(&constructor_ref);
+        (constructor_ref, extend_ref)
+    }
+
     public(friend) fun initialize_registry(
         dao_signer: &signer,
         token_metadata: Object<Metadata>,
         dao_name: String,
     ) {
-        let constructor_ref = object::create_object(signer::address_of(dao_signer));
-        // H-02 Defense: Disable ungated transfers on rebase store object
-        let rebase_transfer_ref = object::generate_transfer_ref(&constructor_ref);
-        object::disable_ungated_transfer(&rebase_transfer_ref);
-        let rebase_store = fungible_asset::create_store(&constructor_ref, token_metadata);
-        let rebase_extend_ref = object::generate_extend_ref(&constructor_ref);
+        let (rebase_c, rebase_extend_ref) = create_guarded_subobject(dao_signer);
+        let rebase_store = fungible_asset::create_store(&rebase_c, token_metadata);
 
-        // FIX (audit C-01): Create a dedicated escrow store owned by the DAO for all locked tokens
-        let escrow_constructor = object::create_object(signer::address_of(dao_signer));
-        // H-02 Defense: Disable ungated transfers on escrow store object
-        let escrow_transfer_ref = object::generate_transfer_ref(&escrow_constructor);
-        object::disable_ungated_transfer(&escrow_transfer_ref);
-        let escrow_store = fungible_asset::create_store(&escrow_constructor, token_metadata);
-        let escrow_extend_ref = object::generate_extend_ref(&escrow_constructor);
+        let (escrow_c, escrow_extend_ref) = create_guarded_subobject(dao_signer);
+        let escrow_store = fungible_asset::create_store(&escrow_c, token_metadata);
         
-        // We create a sub-object dedicated to signing and owning the DAO's collection
-        let creator_constructor = object::create_object(signer::address_of(dao_signer));
-        // H-02 Defense: Disable ungated transfers on creator object
-        let creator_transfer_ref = object::generate_transfer_ref(&creator_constructor);
-        object::disable_ungated_transfer(&creator_transfer_ref);
-        let creator_signer = object::generate_signer(&creator_constructor);
-        let creator_extend_ref = object::generate_extend_ref(&creator_constructor);
+        let (creator_c, creator_extend_ref) = create_guarded_subobject(dao_signer);
+        let creator_signer = object::generate_signer(&creator_c);
 
         // Premium Names (Example: "Governance of Aerodrome")
         let collection_name = string::utf8(b"Gov. of ");
@@ -267,28 +261,13 @@ module dao_factory::legacy {
         // to the treasury keeps acc_rebase_per_share hard at 0, so the rebase
         // withdrawal in compound_rebase_internal is unreachable for them
         // (pending is always 0). Smart-token DAOs are unaffected.
-        if (registry.total_locked > 0 && amount > 0) {
+        let dest_store = if (registry.total_locked > 0 && amount > 0) {
             registry.acc_rebase_per_share = math::add_per_share(amount, registry.total_locked, registry.acc_rebase_per_share);
-            // [FIX (AUDIT13 #1)] Route through the DAO's TaxFreeCap instead of
-            // the raw dispatchable deposit: the deposit hook would skim
-            // buy_tax when the DAO activates taxes on its OWN token, charging
-            // the store less than the accumulator promises (insolvent
-            // rebase_store = permanent compound DoS). The DAO master signer
-            // is the router proof (registered at migration, audit13 R-1) 
-            // users can never produce it.
-            tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), registry.rebase_store, rebase_fa);
+            registry.rebase_store
         } else {
-            // SECURITY FIX (VULN-06): When no one is locking, rebase tokens
-            // deposited into rebase_store would be stranded forever (the
-            // accumulator can never distribute them). Redirect them to the
-            // DAO treasury instead, where governance can recover them.
-            let dest_store = primary_fungible_store::ensure_primary_store_exists(dao_address, fungible_asset::asset_metadata(&rebase_fa));
-            if (tax_router::has_tax_free_router(dao_address)) {
-                tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), dest_store, rebase_fa);
-            } else {
-                dispatchable_fungible_asset::deposit(dest_store, rebase_fa);
-            };
+            primary_fungible_store::ensure_primary_store_exists(dao_address, fungible_asset::asset_metadata(&rebase_fa))
         };
+        tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), dest_store, rebase_fa);
     }
 
     public(friend) fun inject_rewards(
@@ -371,10 +350,8 @@ module dao_factory::legacy {
         ve_data.locked_amount = new_total;
         registry.total_locked = registry.total_locked + additional_amount;
         
-        let history = borrow_global_mut<TotalLockedHistory>(ve_data.dao_address);
-        record_lock_delta(history, old_amount, ve_data.end_epoch, new_total, ve_data.end_epoch, current_epoch);
-        checkpoint_supply_internal(history, current_epoch);
-        scan::upsert_registry_snapshot(&mut history.snapshots, current_epoch, registry.total_locked, history.last_bias);
+        record_lock_delta(borrow_global_mut<TotalLockedHistory>(ve_data.dao_address), old_amount, ve_data.end_epoch, new_total, ve_data.end_epoch, current_epoch);
+        update_total_locked_history(ve_data.dao_address, registry.total_locked);
         upsert_snapshot(ve_data);
     }
 
@@ -396,24 +373,22 @@ module dao_factory::legacy {
         let current_epoch = pilgrim::now();
         if (ve_data.end_epoch <= current_epoch) {
             sweep_orphaned_rebase_internal(obj_addr, ve_data, registry);
-            harvest::checkpoint(ve_data.dao_address, obj_addr, ve_data.locked_amount);
-            return
+        } else {
+            let (pending, earned_u128) = math::compute_pending_rebase(
+                ve_data.locked_amount, registry.acc_rebase_per_share, ve_data.rebase_debt, fungible_asset::balance(registry.rebase_store)
+            );
+
+            if (pending > 0) {
+                let rebase_signer = object::generate_signer_for_extending(&registry.rebase_extend_ref);
+                transfer_tax_free(ve_data.dao_address, &rebase_signer, registry.rebase_store, registry.escrow_store, pending);
+
+                apply_lock_amount_increase(ve_data, registry, pending, current_epoch);
+
+                event::emit(RebaseCompounded { legacy: obj_addr, amount: pending });
+            };
+
+            ve_data.rebase_debt = earned_u128;
         };
-
-        let (pending, earned_u128) = math::compute_pending_rebase(
-            ve_data.locked_amount, registry.acc_rebase_per_share, ve_data.rebase_debt, fungible_asset::balance(registry.rebase_store)
-        );
-
-        if (pending > 0) {
-            let rebase_signer = object::generate_signer_for_extending(&registry.rebase_extend_ref);
-            transfer_tax_free(ve_data.dao_address, &rebase_signer, registry.rebase_store, registry.escrow_store, pending);
-
-            apply_lock_amount_increase(ve_data, registry, pending, current_epoch);
-
-            event::emit(RebaseCompounded { legacy: obj_addr, amount: pending });
-        };
-
-        ve_data.rebase_debt = earned_u128;
 
         // Checkpoint harvest rewards AFTER changing locked_amount
         harvest::checkpoint(ve_data.dao_address, obj_addr, ve_data.locked_amount);
@@ -425,11 +400,6 @@ module dao_factory::legacy {
         format::format_ve_nft_uri(registry.base_uri, obj_addr)
     }
 
-
-
-
-
-
     public(friend) fun update_base_uri(dao_signer: &signer, new_uri: String) acquires VeTokenRegistry {
         let dao_address = signer::address_of(dao_signer);
         let registry = borrow_global_mut<VeTokenRegistry>(dao_address);
@@ -439,17 +409,12 @@ module dao_factory::legacy {
     // Public Functions 
 
     // --- Helper to reduce Bytecode Bloat ---
-    // Extracted the repetitive setup for `compound_rebase_internal`
     fun prepare_and_compound(owner: &signer, legacy_addr: address): (address, address) acquires VeToken, VeTokenRegistry, TotalLockedHistory {
-        let (owner_addr, legacy) = verify_owner_and_get_legacy(owner, legacy_addr);
-        let obj_addr = legacy_addr;
-        let dao_address = get_dao_address(legacy);
-        
-        {
-            let ve_data = borrow_global_mut<VeToken>(obj_addr);
-            let registry = borrow_global_mut<VeTokenRegistry>(ve_data.dao_address);
-            compound_rebase_internal(owner, obj_addr, ve_data, registry);
-        };
+        let (owner_addr, _) = verify_owner_and_get_legacy(owner, legacy_addr);
+        let ve_data = borrow_global_mut<VeToken>(legacy_addr);
+        let dao_address = ve_data.dao_address;
+        let registry = borrow_global_mut<VeTokenRegistry>(dao_address);
+        compound_rebase_internal(owner, legacy_addr, ve_data, registry);
         (owner_addr, dao_address)
     }
 
@@ -654,16 +619,16 @@ module dao_factory::legacy {
         registry.total_locked = registry.total_locked - locked_amount;
         update_total_locked_history(dao_address, registry.total_locked);
 
-        // FIX (audit C-01): Withdraw from central escrow_store using escrow_signer
         let escrow_signer = object::generate_signer_for_extending(&registry.escrow_extend_ref);
+        let dao_signer = ledger::generate_signer(dao_address);
         let fa = if (tax_router::has_tax_free_router(dao_address)) {
-            tax_router::withdraw_tax_free(dao_address, &ledger::generate_signer(dao_address), registry.escrow_store, locked_amount)
+            tax_router::withdraw_tax_free(dao_address, &dao_signer, registry.escrow_store, locked_amount)
         } else {
             dispatchable_fungible_asset::withdraw(&escrow_signer, registry.escrow_store, locked_amount)
         };
 
         let user_store = primary_fungible_store::ensure_primary_store_exists(owner_addr, registry.token_metadata);
-        tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), user_store, fa);
+        tax_router::deposit_tax_free(dao_address, &dao_signer, user_store, fa);
 
         // Checkpoint for rewards (0 because everything was withdrawn)
         harvest::checkpoint(dao_address, legacy_addr, 0);
@@ -1051,16 +1016,17 @@ module dao_factory::legacy {
     // Internal protocol stores owned by the DAO use `withdraw_tax_free`;
     // external user stores (create_lock, increase_amount) use `withdraw_tax_free_by_owner`.
     fun transfer_tax_free(dao_address: address, owner: &signer, from_store: Object<FungibleStore>, to_store: Object<FungibleStore>, amount: u64) {
+        let dao_signer = ledger::generate_signer(dao_address);
         if (tax_router::has_tax_free_router(dao_address)) {
             if (object::owner(from_store) == dao_address) {
-                let fa = tax_router::withdraw_tax_free(dao_address, &ledger::generate_signer(dao_address), from_store, amount);
-                tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), to_store, fa);
+                let fa = tax_router::withdraw_tax_free(dao_address, &dao_signer, from_store, amount);
+                tax_router::deposit_tax_free(dao_address, &dao_signer, to_store, fa);
             } else {
                 tax_router::transfer_tax_free_from_owner(dao_address, owner, from_store, to_store, amount);
             };
         } else {
             let fa = dispatchable_fungible_asset::withdraw(owner, from_store, amount);
-            tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), to_store, fa);
+            tax_router::deposit_tax_free(dao_address, &dao_signer, to_store, fa);
         };
     }
 

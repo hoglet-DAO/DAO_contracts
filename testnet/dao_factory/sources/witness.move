@@ -190,9 +190,6 @@ module dao_factory::witness {
         let lock_until_epoch = (end_t / pilgrim::duration()) + 1;
         legacy::set_last_voted_epoch(ve_token_obj, lock_until_epoch);
 
-        // Read updated totals for the event
-        let (_, _, _, _, _, _, total_for, total_against, total_abstain) = ledger::get_proposal_details(dao_address, proposal_id);
-
         event::emit(VoteCast {
             dao_address,
             proposal_id,
@@ -200,9 +197,9 @@ module dao_factory::witness {
             legacy: ve_addr,
             support,
             weight,
-            total_for,
-            total_against,
-            total_abstain,
+            total_for: for_v,
+            total_against: against_v,
+            total_abstain: abstain_v,
         });
     }
 

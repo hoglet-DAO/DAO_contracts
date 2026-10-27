@@ -203,21 +203,15 @@ module dao_factory::anchor {
                 if (smart_token::is_initialized(dao_token_address)) {
                     smart_token::set_exemption(dao_token_address, &dao_signer, gauge_address, true);
                 };
-            } else if (action_type == 1) {
-                dao_factory::zeal::set_gauge_status(&dao_signer, gauge_id, false); // Deactivate
-            } else if (action_type == 2) {
-                dao_factory::zeal::set_gauge_status(&dao_signer, gauge_id, true); // Activate
+            } else if (action_type == 1 || action_type == 2) {
+                dao_factory::zeal::set_gauge_status(&dao_signer, gauge_id, action_type == 2);
             } else {
                 abort error::invalid_argument(E_INVALID_ACTION)
             };
         } else if (proposal_type == 4) { // Guardian Update
             assert!(charter::is_blessed(dao_address), error::invalid_state(E_NOT_BLESSED));
             let new_guardian = ledger::extract_proposal_action_guardian(dao_address, proposal_id);
-            if (new_guardian == @0x0) {
-                charter::update_guardian(&dao_signer, std::option::none());
-            } else {
-                charter::update_guardian(&dao_signer, std::option::some(new_guardian));
-            };
+            charter::update_guardian(&dao_signer, if (new_guardian == @0x0) { std::option::none() } else { std::option::some(new_guardian) });
             sentinel::force_unpause_by_governance(dao_address);
         } else if (proposal_type == 5) { // NFT Transfer
             let (nft_address, recipient) = ledger::extract_proposal_action_nft(dao_address, proposal_id);
@@ -313,17 +307,11 @@ module dao_factory::anchor {
             E_THRESHOLD_NOT_DROPPED
         );
 
-        let current_power = if (object::object_exists<legacy::VeToken>(ve_token_addr)) {
-            let ve_token_obj = object::address_to_object<legacy::VeToken>(ve_token_addr);
-            if (object::is_owner(ve_token_obj, proposer)) {
-                // Check power at the proposal's snapshot epoch to avoid natural time decay griefing
-                let snapshot_epoch = ledger::get_proposal_snapshot_epoch(dao_address, proposal_id);
-                legacy::get_voting_power_at(ve_token_obj, snapshot_epoch)
-            } else {
-                0
-            }
+        let current_power = if (object::object_exists<legacy::VeToken>(ve_token_addr) && object::is_owner(object::address_to_object<legacy::VeToken>(ve_token_addr), proposer)) {
+            let snapshot_epoch = ledger::get_proposal_snapshot_epoch(dao_address, proposal_id);
+            legacy::get_voting_power_at(object::address_to_object<legacy::VeToken>(ve_token_addr), snapshot_epoch)
         } else {
-            0 // NFT was destroyed, voting power is 0
+            0
         };
 
         // If the power is still above or equal to the threshold, it cannot be canceled.
@@ -345,7 +333,6 @@ module dao_factory::anchor {
         mark_as_canceled(dao_address, proposal_id);
     }
 
-
     // Security Function: Finalizes a proposal after voting ends, recording its participation
     // for the dynamic rolling quorum. Anyone can call this.
     public entry fun finalize_proposal(dao_address: address, proposal_id: u64) {
@@ -355,26 +342,10 @@ module dao_factory::anchor {
         assert!(!canceled, error::invalid_state(E_ALREADY_CANCELED));
         assert!(!executed, error::invalid_state(E_ALREADY_EXECUTED));
 
-        // Support-only turnout (for + abstain) drives both the quorum check and the
-        // dynamic rolling average, so opposition votes never qualify a proposal.
         let qualifying_votes = for_v + abstain_v;
-
-        // SECURITY FIX (VULN-03): Only record participation if the proposal
-        // genuinely succeeded: it must win the vote AND reach quorum.
-        // The previous check (for_v > against_v alone) allowed a governance
-        // capture spiral: an attacker with just enough power to propose could
-        // create self-voted proposals with tiny turnout (which "win" 1-0 but
-        // never reach quorum), driving the rolling average participation down
-        // to the 10%-of-default floor. Since treasury transfers only require
-        // the regular dynamic quorum, this paved the way to drain the treasury
-        // with minimal voting power.
         let quorum_required = ledger::get_proposal_quorum(dao_address, proposal_id);
-        if (for_v > against_v && qualifying_votes >= quorum_required) {
-            ledger::record_participation(dao_address, proposal_id, qualifying_votes);
-        } else {
-            // Mark it as finalized in the ledger without affecting the moving average quorum
-            ledger::record_participation(dao_address, proposal_id, 0); // Assuming 0 skips the EMA calculation, or we need a specific function.
-        };
+        let participation = if (for_v > against_v && qualifying_votes >= quorum_required) { qualifying_votes } else { 0 };
+        ledger::record_participation(dao_address, proposal_id, participation);
     }
 
     // --- Helpers for Deduplication ---

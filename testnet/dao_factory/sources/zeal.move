@@ -334,11 +334,7 @@ module dao_factory::zeal {
     // Called by `jubilee` when advancing the epoch.
     // Dumps the emission destined for gauges into the vault for later claiming (Pull Architecture).
     fun deposit_tax_free_or_dispatch(dao_address: address, store: Object<FungibleStore>, fa: FungibleAsset) {
-        if (tax_router::has_tax_free_router(dao_address)) {
-            tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), store, fa);
-        } else {
-            dispatchable_fungible_asset::deposit(store, fa);
-        };
+        tax_router::deposit_tax_free(dao_address, &ledger::generate_signer(dao_address), store, fa);
     }
 
     public(friend) fun distribute_emissions(

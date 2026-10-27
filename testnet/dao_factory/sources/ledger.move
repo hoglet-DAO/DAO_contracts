@@ -320,26 +320,6 @@ module dao_factory::ledger {
     }
 
     #[view]
-    public fun get_proposal_action_treasury_full(dao_address: address, proposal_id: u64): (address, address, u64) acquires DaoState {
-        let state = borrow_global<DaoState>(dao_address);
-        let proposal = get_proposal_safe(state, proposal_id);
-        (proposal.action_target_address, proposal.action_recipient, proposal.action_amount)
-    }
-
-    #[view]
-    public fun get_proposal_action_nft(dao_address: address, proposal_id: u64): (address, address) acquires DaoState {
-        let state = borrow_global<DaoState>(dao_address);
-        let proposal = get_proposal_safe(state, proposal_id);
-        (proposal.action_target_address, proposal.action_recipient)
-    }
-
-    #[view]
-    public fun get_proposal_action_guardian(dao_address: address, proposal_id: u64): address acquires DaoState {
-        let state = borrow_global<DaoState>(dao_address);
-        get_proposal_safe(state, proposal_id).action_target_address
-    }
-
-    #[view]
     public fun get_proposal_action_raw(dao_address: address, proposal_id: u64): (u8, address, address, u64, u8, u64) acquires DaoState {
         let state = borrow_global<DaoState>(dao_address);
         let p = get_proposal_safe(state, proposal_id);

@@ -218,7 +218,7 @@ module dao_factory::herald {
         create_proposal_internal(
             proposer, legacy_addr, dao_address, title, description_hash, is_super_quorum, proposal_type,
             proposal_data, action_recipient, action_amount, action_config_key, action_config_value,
-            action_target_address, derived_target, derived_asset
+            action_target_address, derived_target, derived_asset, vector::empty(), vector::empty()
         );
     }
 
@@ -252,22 +252,13 @@ module dao_factory::herald {
             E_STATIC_SCRIPT_HAS_ARGS
         );
 
-        let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required, snapshot_epoch) = 
-            validate_and_prepare_proposal(proposer, legacy_addr, dao_address, true, 8u8);
-
         let packed = execution_hash;
         vector::append(&mut packed, args_commitment);
-        let proposal = ledger::new_proposal(
-            proposal_id, proposer_addr, ve_token_addr, title, description_hash, start_time, end_time,
-            snapshot_epoch, quorum_required, 8, packed, @0x0, script_id, 0, 0, @0x0
+
+        create_proposal_internal(
+            proposer, legacy_addr, dao_address, title, description_hash, true, 8,
+            packed, @0x0, script_id, 0, 0, @0x0, @0x0, @0x0, execution_hash, args_commitment
         );
-        ledger::add_proposal(dao_address, proposal_id, proposal);
-        event::emit(ProposalCreated {
-            dao_address, proposal_id, proposer: proposer_addr, title, proposal_type: 8,
-            start_time, end_time, action_target_address: @0x0, action_asset_address: @0x0,
-            action_recipient: @0x0, action_amount: script_id, action_config_key: 0,
-            action_config_value: 0, description_hash, execution_hash, args_commitment
-        });
     }
 
     // --- Helper for Deduplication ---
@@ -288,6 +279,8 @@ module dao_factory::herald {
         action_target_address: address,
         event_target: address,
         event_asset: address,
+        execution_hash: vector<u8>,
+        args_commitment: vector<u8>,
     ) acquires HeraldState {
         let (proposer_addr, ve_token_addr, start_time, end_time, proposal_id, quorum_required, snapshot_epoch) = 
             validate_and_prepare_proposal(proposer, legacy_addr, dao_address, is_super_quorum, proposal_type);
@@ -313,8 +306,8 @@ module dao_factory::herald {
             action_config_key: (action_config_key as u64),
             action_config_value,
             description_hash,
-            execution_hash: vector::empty(),
-            args_commitment: vector::empty(),
+            execution_hash,
+            args_commitment,
         });
     }
 }
