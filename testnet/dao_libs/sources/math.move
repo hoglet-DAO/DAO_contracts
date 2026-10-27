@@ -539,9 +539,8 @@ module dao_libs::math {
     ) {
         assert!(from_dao == into_dao, error::invalid_argument(e_invalid_object));
         assert!(from_end_epoch > current_epoch, error::invalid_state(e_lock_expired));
-        let check_epoch = if (current_epoch > 0) { current_epoch - 1 } else { 0 };
-        assert!(from_last_voted < check_epoch, error::invalid_state(e_voted_recently));
-        assert!(into_last_voted < check_epoch, error::invalid_state(e_voted_recently));
+        assert!(from_last_voted < current_epoch, error::invalid_state(e_voted_recently));
+        assert!(into_last_voted < current_epoch, error::invalid_state(e_voted_recently));
     }
 
     // Validates public cancel preconditions
